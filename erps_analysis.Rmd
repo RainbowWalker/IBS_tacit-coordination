@@ -1,0 +1,830 @@
+---
+title: "erps_analysis"
+author: "Katerina Christodoulou"
+date: "3/30/2021"
+output: html_document
+---
+
+
+# Analysis of ERPs 
+
+Conditions
+- low color: 101
+- low shape: 102
+- high color: 103
+- high shape: 104
+
+#### Brain regions, electrodes, and main functions by [Bastos et al, 2020](https://doi.org/10.1155/2020/3598416)
+Brain region  |  Electrodes                 |  Proprietary functions
+--------------|-----------------------------|-----------------------
+Frontal lobe  |Fp1, Fp2, AFz, F7, F3, Fz,F4,|Εxecutive functions (management 
+              |                             |of cognitive/emotional resources in a given task)
+              | F8, FC5, FC1, FCz, FC2, FC6 |
+              |                             | 
+Temporal lobe | T7, T8,                     |Perception of biological motion
+              |                             |
+Parietal lobe |P7, P3, Pz, P4, P8, PO9, PO10|Somatosensory perception, spatial representations,
+              |CP1, CP2, CP5, CP6           |and tactile perceptions
+              |                             |
+Occipital lobe|O1, Oz,  O2                  |View images (including during a dialogue)
+
+
+## Preperation: Preperation of the WD, the packages-to-use and the data. 
+
+### Directory
+
+```{r cars, directory}
+# Clear R enviroment
+rm(list=ls())
+
+# Set working directory
+setwd("C:/Users/katec/Desktop/Major_Project/5. Analysis/ERPs")
+```
+
+### Load Libraries
+```{r, libraries, echo=FALSE,warning=FALSE}
+library(data.table)
+library(tidyverse)
+library(ggplot2)
+library(psych)
+library(plotfunctions)
+library(plyr); library(dplyr)
+library(ERP)
+
+
+library(lme4)
+library(lmerTest) # to get p-value estimations that are not part of the standard lme4 packages
+library(emmeans)
+library(Hmisc)
+library(mltools)
+
+library(writexl)
+```
+
+### Import data
+The data correspond to the avg of the time window [.25,.45], when the P3 component is expected to occur. It contains sess, subj, condition, channel, erp_amplitude
+```{r, data}
+
+# 1st analysis with data P3 time window: 0.2 - 0.45
+# 2nd analysis with data P3 time window: 0.3 - 0.5
+
+data_erp <- as.data.table(fread("erp_amplitude_w3-5.csv"))
+
+data_erp<-data_erp[, .(session = V1, subj = V2 , condition = V3, channel = V4 , erp_ampl = V5)] #name the cols
+head(data_erp)
+
+
+```
+
+### Outliers Check 
+
+```{r}
+
+# Descriptive Statistics
+out_check <- data_erp
+summary(out_check$erp_ampl)  
+# The mean is around 2 as well as the median, while the min & max values are -46 & 96 respectively.
+
+
+# Histogram
+ggplot(out_check) +
+  aes(x = erp_ampl
+      # , fill = session
+      ) +
+  geom_histogram(bins = 50L, fill = "#0c4c8a") +
+  theme_minimal()
+
+
+# Boxplot
+ggplot(out_check) +
+  aes(x = "", y = erp_ampl) +
+  geom_boxplot(fill = "#0c4c8a") +
+  theme_minimal()+
+  geom_jitter(shape=16, position=position_jitter(0.2), alpha = .3)
+
+# IQR criterion : all observations below q25 (first quantile) & above q75 (3 quantile) are considered as potential outliers
+# If we want to extract the values of the potential outliers based on the IQR: 
+outs <- boxplot.stats(out_check$erp_ampl)$out
+
+# Check to which row numbers they correspond 
+out_indx <- which(out_check$erp_ampl %in% c(outs))
+
+# Check back to the dataset
+checking <- out_check[out_indx, ]
+
+#_____________________________________________
+```
+
+```{r}
+# Check for outlier with sd (2 or 3)
+
+
+mean.data = mean(out_check$erp_ampl)
+sd.data = sd(out_check$erp_ampl)
+a = 1
+
+
+Out.detect <- Vectorize(function(x){
+  val <- abs((x - mean.data)/sd.data)
+  return(ifelse(val>a, TRUE, FALSE))
+}  )
+
+# Identifying outliers in the data with the non-robust method
+out_check <- cbind.data.frame(out_check,Out.detect(out_check$erp_ampl))
+
+
+which(out_check$`Out.detect(out_check$erp_ampl)`== TRUE) #only sess42 subj2
+```
+
+```{r}
+# The IQR may be too strict and it removes too many values. Maybe its better to go with the std. In most such studies, an outlier consists of 2st.d.s away from the mean, Therefore, only session 42 -subj2 must be removed. 
+data_erp <- data_erp[ !(session == "sess42" & subj == "subj2"),] 
+
+# write_xlsx(checking,"C:/Users/katec/Desktop/Major_Project/5. Analysis/ERPs/outliers_IQR.xlsx")
+
+```
+
+
+### SPlit condition
+```{r}
+
+# load_condition: 1 = "low", 2 = "high"
+data_erp [, load_condition := as.factor("")] [condition == 101 | condition == 102, load_condition := as.factor("low") ] [condition == 103 | condition == 104, load_condition := as.factor("high")]
+
+# stim_type: 1 = "color", 2 = "shape"
+data_erp [, stim_type := as.factor("")] [condition == 101 | condition == 103, stim_type := as.factor("color") ] [condition == 102 | condition == 104, stim_type := as.factor("shape")]
+# remove condition column
+# data_erp[, condition := NULL]
+
+```
+
+
+
+
+### Mean ERPs by channel and condition
+1. Find the mean erp-amplitude in each channel by load_condition across all participants.
+(** we should expect a greater difference btw those conditions in the parietal regions, where the P3b is expected**)
+
+2. Find the mean erp-amplitude in each channel by condition (load + stim) across all participants. 
+
+```{r}
+# By cognitive load
+meanload_erps <- ddply(data_erp,  c("load_condition", "channel"), summarise,
+                mean_erp = mean(erp_ampl), sd_erp=sd(erp_ampl), 
+                se_erp = se(erp_ampl))
+
+# by overall condition
+meancond_erps <- ddply(data_erp,  c("condition", "channel"), summarise,
+                meancond_erp = mean(erp_ampl), sdcond_erp=sd(erp_ampl), 
+                second_erp = se(erp_ampl))
+```
+
+### Group  channels
+```{r}
+
+
+channel_labels <- unique(data_erp$channel)
+frontal_chans <- list(grep(glob2rx("*F*"), channel_labels, value = TRUE))
+parietal_chans <- grep(glob2rx("*P*"), channel_labels, value = TRUE)
+occipital_chans <- grep(glob2rx("O*"), channel_labels, value = TRUE)
+temporal_chans<- grep(glob2rx("T*"), channel_labels, value = TRUE)
+
+```
+
+
+
+### Plot the means 
+
+```{r}
+meanload_erp_plot<- ggplot(data=meanload_erps,
+                    aes(x=load_condition, y=mean_erp, fill=channel)) +
+  geom_bar(stat="identity", position= position_dodge(), width= 0.9) +
+  # geom_errorbar(aes(ymin = mean_erp - se_erp, ymax = mean_erp + se_erp),  
+                # width=.5, position=position_dodge(0.9)) + # weird error bars
+  xlab('Cognitive Load') +
+  ylab('Mean ERP value')+
+  labs(fill='Channel') +
+  ggtitle("Mean ERP amplitude by cognitive load in different channels")+
+  theme_minimal()
+
+
+# Plot Mean erp amplitude by condition
+meancond_erp_plot<- ggplot(data=meancond_erps,
+                    aes(x=condition, y=meancond_erp
+                         , fill=channel
+                        )) +
+  geom_bar(stat="identity", position= position_dodge(), width= 0.9) +
+  # geom_errorbar(aes(ymin = mean_erp - se_erp, ymax = mean_erp + se_erp),  
+                # width=.5, position=position_dodge(0.9)) + # weird error bars
+  xlab('Condtiion') +
+  ylab('Mean ERP value')+
+  labs(fill='Channel') +
+  ggtitle("Mean ERP amplitude by condition in different channels")+
+  theme_minimal()
+
+
+meanload_erp_plot
+meancond_erp_plot
+
+```
+
+
+Plot grouped channels
+```{r}
+# Subset data to different regions -without teasing the original data 
+# not very elegant data preparation
+frontal_data<- as.data.frame(data_erp[data_erp$channel %in% c("Fp1", "AF3", "F7",  "F3",  "FC1", "FC5", "FC6", "FC2", "F4",  "F8",  "AF4", "Fp2", "Fz" ),])
+
+parietal_data<- as.data.frame(data_erp[data_erp$channel %in% c("CP1", "CP5", "P7",  "P3",  "Pz",  "PO3", "PO4", "P4",  "P8",  "CP6", "CP2"),])
+
+temporal_data<- as.data.frame(data_erp[data_erp$channel %in% c("T7", "T8"),])
+
+occipital_data <- as.data.frame(data_erp[data_erp$channel %in% c("O1", "Oz" ,"O2" ),])
+
+# summarize the data based on condition
+meanfrontal_erps <- ddply(frontal_data,  c("load_condition"), summarise,
+                mean_erp = mean(erp_ampl), sd_erp=sd(erp_ampl), 
+                se_erp = se(erp_ampl))
+meanfrontal_erps$group <- "frontal"
+
+meanparietal_erps <- ddply(parietal_data,  c("load_condition"), summarise,
+                mean_erp = mean(erp_ampl), sd_erp=sd(erp_ampl), 
+                se_erp = se(erp_ampl))
+meanparietal_erps$group <- "parietal"
+
+meantemporal_erps <- ddply(temporal_data,  c("load_condition"), summarise,
+                mean_erp = mean(erp_ampl), sd_erp=sd(erp_ampl), 
+                se_erp = se(erp_ampl))
+meantemporal_erps$group <- "temporal"
+
+meanoccipital_erps <- ddply(occipital_data,  c("load_condition"), summarise,
+                mean_erp = mean(erp_ampl), sd_erp=sd(erp_ampl), 
+                se_erp = se(erp_ampl))
+meanoccipital_erps$group <- "occipital"
+
+
+grouped_data <- rbind(meanfrontal_erps,  meanoccipital_erps, meanparietal_erps, meantemporal_erps)
+
+# Plotting 
+group_plot<- ggplot(data=grouped_data,
+                    aes(x=load_condition, y=mean_erp, fill = group)) +
+  geom_bar(stat="identity", position= position_dodge(), width= 0.9) +
+  # geom_errorbar(aes(ymin = mean_erp - se_erp, ymax = mean_erp + se_erp),  
+                # width=.5, position=position_dodge(0.9)) + # weird error bars
+  xlab('Cognitive Load') +
+  ylab('Mean ERP value')+
+  labs(fill = "Region")+
+  ggtitle("Mean ERP amplitude by cognitive load in  Regions")+
+  scale_fill_manual(values = c("red4",  "yellow2", "green4", "blue4"))+
+  # coord_cartesian(ylim=c(0.0, 1))+
+  theme_minimal()
+
+group_plot
+
+
+```
+In this graph, we see mean erp-amplitude for frontal, occipital and parietal channels. 
+- As we see in all regions higher erp amplitude is observed in the low condition as compared to the high load condition.
+  
+Could it be that due to not having any distraction (or pretty low) and thus being able to take create the mental representation of the other or more sufficiently suppress their own representation of choice(though inhibition should be frontal). 
+
+## P3 Component
+
+- Latency:  250-500 msec after stimulus time to evaluate and categorize the stimulus. 
+- Amplitude: reflects stimulus information. Greater attention produces larger P3 waves.
+(Sutton et al. in 1965)
+
+The P3 is a complex component that usually is divided in 2 subcomponents:
+a) *P3a*: fronto-central positive at 200–300 ms
+  - depends on the nature of the task 
+  - initial evalutation & categorization of stimulus
+  - larger when performing in the presence of a co-player(Sebanz et al., 2006; Tsai et al., 2006) 
+    ==> social context dependency
+  - P3a is expected to be larger in joint VS individual action planning (Kourtis et al., 2013)
+  - The frontal P3a is associated with the involuntary capture of attention or “bottom-up” orienting processes            (Friedman et al., 2001). 
+  - One of the primary generators of the scalp-recorded component comes from the anterior cingulate cortex (ACC) (Dien     et al., 2003), although other regions, including the medial prefrontal cortex and lateral prefrontal cortex, are      also involved (Knight et al., 1989). 
+  
+b) *P3b*: parietal  at 250 to 500 ms
+  - WM updating, task context representation, decision-making (Tononi et al., 2016)
+  - considered in the attentional network (Kropotov et al., 2009)
+  - P3b is expected to be enlarged before joint action: may indicate the updating of the representation of both partners’ specific parts of the task in memory(Kourtis et al., 2013)
+  - Parieto-central electrodes include: CP3, CP1, P1, P3, Pz, CPz, PO1, PO2, P2, P4, CP2, CP4.
+  - The parietal P3b is associated with the updating of working memory (Donchin and Coles, 1988). 
+  - Evidence suggests that several regions are involved in generating the P3b, including the temporal-parietal,           ventral temporo-frontal, and hippocampus areas (Halgren et al., 1998, Polich and Criado, 2006).
+
+
+
+
+# ERP package (not in use)
+
+check this [link](https://cran.r-project.org/web/packages/ERP/vignettes/ERP.html)
+```{r}
+
+```
+
+### ERP statistics
+Usually Repeated Measures ANOVA are used.
+GLM > repeated measures > Within-factors: channel (), time(?). Between is the condition.
+
+
+
+
+# LMERs for erp ampltudes in the different channels
+## Data Preparation 
+
+For each different channel 
+```{r}
+
+# Turn off scientific notation 
+options(scipen=999)
+# or back on : options(scipen=0)
+
+
+anova_NR_output = NULL
+anova_RF_output = NULL
+anova_NF_output = NULL
+
+
+
+for (iChannel in 1:length(unique(data_erp$channel)))
+{
+  currChan = unique(data_erp$channel)[iChannel]
+  
+  currChanData = data_erp[data_erp$channel==currChan]
+  
+  null.md <- lmer(erp_ampl ~ 1 + (1|session/subj), currChanData, REML = FALSE)
+  reduced.md <- lmer(erp_ampl ~ stim_type + (1|session/subj), currChanData, REML = FALSE)
+  full.md <- lmer(erp_ampl ~  stim_type + load_condition + (1|session/subj), currChanData, REML = FALSE)
+  
+  
+  comparison1.tmp <- anova(null.md, reduced.md)
+  comparison2.tmp <- anova(reduced.md, full.md)
+  # comparison3.tmp <- anova(null.md, full.md)
+  comparison1.tmp$channel <-  currChan
+  comparison2.tmp$channel <-  currChan
+  # comparison3.tmp$channel <-  currChan
+  # add the comparison to df
+  anova_NR_output <- rbind(anova_NR_output, comparison1.tmp)
+  anova_RF_output <- rbind(anova_RF_output, comparison2.tmp)
+  # anova_NF_output <- rbind(anova_NF_output, comparison3.tmp) 
+  
+  
+}
+
+view(anova_NR_output) # Window 3-5: All apart from Oz & O2
+#NEW_DATA: All channels apart from PO3, O1, O2, Oz, PO4, ~P8
+# OLD_DATA:significant channels T8 --> Right temporal gyrus semantic memory processing, language processes (middle temporal gyrus
+
+
+view(anova_RF_output)  # Window 3-5: CP1, FC1, CP5, P7 P3, Pz, PO3, O1, Po4, P4, P8, CP6, CP2, C4, FC2, F4, AF4, FZ, CZ
+#NEW_DATA None
+# OLD_DATA:significant channels CP1 --> superior parietal (Somatosensory Association Cortex)
+
+
+# view(anova_NF_output)  # Window 3-5: 
+
+
+
+# write_xlsx(anova_NR_output,"C:/Users/katec/Desktop/Major_Project/5. Analysis/ERPs/lmer_tables_erps/ anova_NR_output_w35.xlsx")
+# write_xlsx(anova_RF_output,"C:/Users/katec/Desktop/Major_Project/5. Analysis/ERPs/lmer_tables_erps/ anova_RF_output_w35.xlsx")
+ # write_xlsx(anova_NR_output,"C:/Users/katec/Desktop/Major_Project/5. Analysis/ERPs/lmer_tables_erps/ anova_NF_output_w35.xlsx")
+
+
+
+```
+
+
+### Testing one channel + summary
+
+Signular Fit:
+
+```{r}
+# "Fp1" "AF3" "F7"  "F3"  "FC1" "FC5" "T7"  "C3"  "CP1" "CP5" "P7"  "P3"  "Pz"  "PO3" "O1"  "Oz"  "O2"  "PO4" "P4" 
+# "P8"  "CP6" "CP2" "C4"  "T8"  "FC6" "FC2" "F4"  "F8"  "AF4" "Fp2" "Fz"  "Cz" 
+
+iChannel.df<- as.data.frame(data_erp[data_erp$channel %in% c("Cz"),]) #change channel and create its df
+
+null.imd <- lmer(erp_ampl ~ 1 + (1|session/subj), iChannel.df, REML = F)
+reduced.imd <- lmer(erp_ampl ~ stim_type + (1|session/subj), iChannel.df, REML = F)
+full.imd <- lmer(erp_ampl ~ stim_type + load_condition + (1|session/subj), iChannel.df, REML = F)
+
+# anova(null.imd, reduced.imd) #P4: sing
+# summary(reduced.imd) ## example for P4: Significant Reduced model: in high shape erp-amp decreases by 0.92. 
+
+anova(reduced.imd, full.imd) #P4: not sign
+summary(full.imd)  #in high condition it decreases but apparently not significantly.
+
+
+# AF4, Fp2 singular fit ?!
+```
+MEan of frontal, occipital & temporal  
+```{r}
+# Reduced models (stimulus)
+stim_frontal <- c(-0.92,-1.02,-0.67,-1.08,-1.37,-0.89, -0.75,-1.32, -1.13, -0.76,-1.07,-1.12,-1.15, -1.45)   
+stim_SE_frontal <- c(0.23, 0.22,0.27, 0.22, 0.23,0.23, 0.26, 0.25,0.23,0.31,0.21,0.25,0.21, 0.26)
+
+stim_occipital <- -0.7735    
+stim_SE_occipital <-  0.2862
+
+stim_temporal <- c(-0.76,-0.62 )
+stim_SE_temporal <- c(0.24,0.27)
+
+mean(load_frontal)
+mean(load_SE_frontal)
+
+
+#
+
+load_frontal <- c( -0.42,-0.48, -0.67,-0.53, -0.45         )
+load_SE_frontal <- c( 0.21,0.23, 0.23, 0.22, 0.2     )
+
+load_occipital <- c()
+load_SE_occipital <- c()
+
+load_temporal <- c(     )
+load_SE_temporal <- c( )
+
+
+```
+
+
+
+MEan of parietal 
+```{r}
+stim <- c(1.57, 1.06, 0.79,  1.40,  1.57,  1.09,  1.08,  1.34, 0.70,  0.96,  1.55)
+stim_SE <- c(0.31, 0.26, 0.27, 0.32,0.32,0.32,0.34,0.31,0.31,0.28, 0.29)
+load <-  c(0.89, 0.54,  0.58, 0.77, 0.99, 0.72, 0.91,0.89, 0.67, 0.86, 0.88)
+load_SE<- - c( 0.30, 0.25, 0.26, 0.31 , 0.31, 0.30, 0.32, 0.29,0.30,0.26 ,0.28)
+
+
+mean(stim)
+
+```
+
+
+LMM on all par (to be erased)
+```{r}
+# null.md <- lmer(erp_ampl ~ 1 + (1|session/subj), parietal_data, REML = F)
+# reduced.imd <- lmer(erp_ampl ~ stim_type + (1|session/subj), parietal_data, REML = F)
+# full.imd <- lmer(erp_ampl ~ stim_type + load_condition + (1|session/subj), parietal_data, REML = F)
+# 
+# anova(null.md, reduced.imd)
+# anova(reduced.imd, full.imd)
+# summary(full.imd)
+
+
+```
+
+
+## Visualizations of ERP Amplitudes
+
+### Barplots
+1. ERP amp over Load condition 
+
+```{r, warning=FALSE}
+se <- function(x){sd(x)/sqrt(length(x))}
+
+for (iChannel in 1:length(unique(data_erp$channel)))
+{
+  currChan = unique(data_erp$channel)[iChannel]
+  currChanData = data_erp[data_erp$channel== currChan]
+  name <- gsub("Channel", " ", currChan) 
+  
+  bar_data = ddply(currChanData,  .(load_condition), summarise,
+                mean_erp = mean(erp_ampl), se_erp = se(erp_ampl)) 
+                
+  
+  load_barplot <- ggplot()+
+          # geom_point(position = "jitter", alpha = .3)+
+    geom_bar(data = bar_data, 
+           aes(y = mean_erp, x = load_condition,
+               ymin = mean_erp - se_erp,
+               ymax = mean_erp + se_erp, fill = load_condition), stat="identity", width=0.75) +
+    geom_hline(yintercept = 0)+
+    geom_point(data = currChanData, aes(y = erp_ampl, x = load_condition, color = "red"),
+               position = position_jitter(width = 0.1), alpha = .3) +
+    # "jitter", width = 0.01
+    geom_errorbar(data = bar_data,
+    aes(y = mean_erp, x = load_condition,
+       ymin = mean_erp - se_erp,
+       ymax = mean_erp + se_erp), stat="identity", width=0.12) +
+    scale_fill_hue(c = 40) +
+          labs(x = "Load", y = "ERP Amplitude", subtitle = "_") +
+          theme_minimal()+
+    theme(legend.position="bottom")+
+    ggtitle(paste0("ERP amplitude on ", as.character(name), " by WM load"))
+    
+  
+  print (load_barplot)
+}
+
+
+
+
+```
+
+
+2. ERP amps over stimulus type
+```{r}
+
+for (iChannel in 1:length(unique(data_erp$channel)))
+{
+  currChan = unique(data_erp$channel)[iChannel]
+  currChanData = data_erp[data_erp$channel== currChan]
+  name <- gsub("Channel", " ", currChan) 
+  
+  bar_data = ddply(currChanData,  .(stim_type), summarise,
+                mean_erp = mean(erp_ampl), se_erp = se(erp_ampl)) 
+                
+  
+  stim_barplot <- ggplot()+
+          # geom_point(position = "jitter", alpha = .3)+
+    geom_bar(data = bar_data, 
+           aes(y = mean_erp, x = stim_type,
+               ymin = mean_erp - se_erp,
+               ymax = mean_erp + se_erp, fill = stim_type), stat="identity", width=0.75) +
+    # geom_point(data = currChanData, aes(y = erp_ampl, x = stim_type, fill = stim_type), 
+    #            position = "jitter") +
+    geom_hline(yintercept = 0)+
+    geom_errorbar(data = bar_data,
+    aes(y = mean_erp, x = stim_type,
+       ymin = mean_erp - se_erp,
+       ymax = mean_erp + se_erp), stat="identity", width=0.12) +
+    scale_fill_manual(values=c("color" = "darkslateblue", "shape" = "tomato3")) +
+          labs(x = "Stimulus Type", y = "ERP Amplitude", subtitle = "_") +
+          theme_minimal()+
+    theme(legend.position="bottom")+
+    ggtitle(paste0("ERP amplitude on ", as.character(name), " by stimulus type"))
+    
+  
+  print (stim_barplot)
+}
+
+
+
+
+
+```
+
+
+#### Data Preparation
+1. Parietal Data
+2. Frontal 
+3. Occipital
+
+```{r}
+
+par_mean_data<- ddply(parietal_data,  c("session",  "condition", "load_condition", "stim_type"), summarise,
+                mean_amplitude = mean(erp_ampl))
+
+front_mean_data<- ddply(frontal_data,  c("session", "condition", "load_condition", "stim_type"), summarise,
+                mean_amplitude = mean(erp_ampl))
+
+occi_mean_data<- ddply(occipital_data,  c("session", "condition", "load_condition", "stim_type"), summarise,
+                mean_amplitude = mean(erp_ampl))
+
+```
+
+#### Spaghetti plots
+
+A. For Cognitive load
+
+```{r}
+
+#1 Parietal
+mean_parietal_sp.plot<- ggplot(data=par_mean_data,
+                       aes(x=as.factor(load_condition), y= mean_amplitude, group=session,
+                           colour=as.factor(session))) +
+                geom_point() +
+                geom_line()+
+                # theme(legend.position = "none")+
+                # geom_text(aes(label = "mean", angle = 60))+
+                stat_summary(fun=mean,geom="line",lwd=2,aes(group=1))+
+                # geom_errorbar(mapping=aes(x=stage, ymin=mean-sd, ymax=mean+sd), width=0.1, size=1, color="black")+
+                labs(title="Mean ERP amplitude by cognitive load in parietal regions",
+                     x="Cognitive Load", y = "Mean ERP amplitude", subtitle = "By pair of pps")
+
+mean_parietal_sp.plot
+
+# 2. Frontal
+mean_frontal_sp.plot<- ggplot(data=front_mean_data,
+                       aes(x=as.factor(load_condition), y= mean_amplitude, group=session,
+                           colour=as.factor(session))) +
+                geom_point() +
+                geom_line()+
+                # theme(legend.position = "none")+
+                # geom_text(aes(label = "mean", angle = 60))+
+                stat_summary(fun=mean,geom="line",lwd=2,aes(group=1))+
+                # geom_errorbar(mapping=aes(x=stage, ymin=mean-sd, ymax=mean+sd), width=0.1, size=1, color="black")+
+                labs(title="Mean ERP amplitude by cognitive load in frontal regions",
+                     x="Cognitive Load", y = "Mean ERP amplitude", subtitle = "By pair of pps")
+
+mean_frontal_sp.plot
+
+
+
+# 3. Occipital
+
+mean_occipital_sp.plot<- ggplot(data=occi_mean_data,
+                       aes(x=as.factor(load_condition), y= mean_amplitude, group=session,
+                           colour=as.factor(session))) +
+                geom_point() +
+                geom_line()+
+                # theme(legend.position = "none")+
+                # geom_text(aes(label = "mean", angle = 60))+
+                stat_summary(fun=mean,geom="line",lwd=2,aes(group=1))+
+                # geom_errorbar(mapping=aes(x=stage, ymin=mean-sd, ymax=mean+sd), width=0.1, size=1, color="black")+
+                labs(title="Mean ERP amplitude by cognitive load in occipital regions",
+                     x="Cognitive Load", y = "Mean ERP amplitude", subtitle = "By pair of pps")
+
+mean_occipital_sp.plot
+
+
+
+
+```
+
+
+B. For Stimulus Type
+
+```{r}
+#1 Parietal
+mean_parietal_st.plot<- ggplot(data=par_mean_data,
+                       aes(x=as.factor(stim_type), y= mean_amplitude, group=session,
+                           colour=as.factor(session))) +
+                geom_point() +
+                geom_line()+
+                # theme(legend.position = "none")+
+                # geom_text(aes(label = "mean", angle = 60))+
+                stat_summary(fun=mean,geom="line",lwd=2,aes(group=1))+
+                # geom_errorbar(mapping=aes(x=stage, ymin=mean-sd, ymax=mean+sd), width=0.1, size=1, color="black")+
+                labs(title="Mean ERP amplitude by stimulus type in parietal regions",
+                     x="Stimulus Type", y = "Mean ERP amplitude", subtitle = "By pair of pps")
+
+mean_parietal_st.plot
+
+# 2. Frontal
+mean_frontal_st.plot<- ggplot(data=front_mean_data,
+                       aes(x=as.factor(stim_type), y= mean_amplitude, group=session,
+                           colour=as.factor(session))) +
+                geom_point() +
+                geom_line()+
+                # theme(legend.position = "none")+
+                # geom_text(aes(label = "mean", angle = 60))+
+                stat_summary(fun=mean,geom="line",lwd=2,aes(group=1))+
+                # geom_errorbar(mapping=aes(x=stage, ymin=mean-sd, ymax=mean+sd), width=0.1, size=1, color="black")+
+                labs(title="Mean ERP amplitude by stimulus type in frontal regions",
+                     x="Stimulus Type", y = "Mean ERP amplitude", subtitle = "By pair of pps")
+
+mean_frontal_st.plot
+
+
+
+# 3. Occipital
+
+mean_occipital_st.plot<- ggplot(data=occi_mean_data,
+                       aes(x=as.factor(stim_type), y= mean_amplitude, group=session,
+                           colour=as.factor(session))) +
+                geom_point() +
+                geom_line()+
+                # theme(legend.position = "none")+
+                # geom_text(aes(label = "mean", angle = 60))+
+                stat_summary(fun=mean,geom="line",lwd=2,aes(group=1))+
+                # geom_errorbar(mapping=aes(x=stage, ymin=mean-sd, ymax=mean+sd), width=0.1, size=1, color="black")+
+                labs(title="Mean ERP amplitude by stimulus type in occipital regions",
+                     x="Stimulus Type", y = "Mean ERP amplitude", subtitle = "By pair of pps")
+
+mean_occipital_st.plot
+
+```
+
+
+
+
+
+2. Spaggetti plot for different parietal electrodes by cognitive load across subjects
+```{r}
+# Data preparation 
+
+par_across.dt<- ddply(parietal_data,  c("channel", "condition", "load_condition", "stim_type"), summarise,
+                mean_amplitude = mean(erp_ampl))
+
+front_across.dt<- ddply(frontal_data,  c("channel", "condition", "load_condition", "stim_type"), summarise,
+                mean_amplitude = mean(erp_ampl))
+
+occi_across.dt<- ddply(occipital_data,  c("channel", "condition", "load_condition", "stim_type"), summarise,
+                mean_amplitude = mean(erp_ampl))
+```
+
+```{r} 
+
+# visualization
+
+# 1. Parietal
+par_across_sp.plot<- ggplot(data=par_across.dt,
+                       aes(x=as.factor(load_condition), y= mean_amplitude, group=channel,
+                           colour=as.factor(channel))) +
+                geom_point() +
+                geom_line()+
+                labs(color = "Parietal Channels")+
+                # geom_text(aes(label = "mean", angle = 60))+
+                stat_summary(fun=mean,geom="line",lwd=2,aes(group=1))+
+                # geom_errorbar(mapping=aes(x=stage, ymin=mean-sd, ymax=mean+sd), width=0.1, size=1, color="black")+
+                labs(title="Mean ERP amplitude by cognitive load in parietal regions",
+                     x="Cognitive Load", y = "Mean ERP amplitude", subtitle = "By channel")+
+                facet_wrap(~stim_type)
+
+par_across_sp.plot
+
+
+ # 2. Frontal
+front_across_sp.plot<- ggplot(data=front_across.dt,
+                       aes(x=as.factor(load_condition), y= mean_amplitude, group=channel,
+                           colour=as.factor(channel))) +
+                geom_point() +
+                geom_line()+
+                labs(color = "Frontal Channels")+
+                # geom_text(aes(label = "mean", angle = 60))+
+                stat_summary(fun=mean,geom="line",lwd=2,aes(group=1))+
+                # geom_errorbar(mapping=aes(x=stage, ymin=mean-sd, ymax=mean+sd), width=0.1, size=1, color="black")+
+                labs(title="Mean ERP amplitude by cognitive load in frontal regions",
+                     x="Cognitive Load", y = "Mean ERP amplitude", subtitle = "By channel")+
+                facet_wrap(~stim_type)
+
+front_across_sp.plot
+
+# 3. Occipital 
+
+occi_across_sp.plot<- ggplot(data=occi_across.dt,
+                       aes(x=as.factor(load_condition), y= mean_amplitude, group=channel,
+                           colour=as.factor(channel))) +
+                geom_point() +
+                geom_line()+
+                labs(color = "Occipital Channels")+
+                # geom_text(aes(label = "mean", angle = 60))+
+                stat_summary(fun=mean,geom="line",lwd=2,aes(group=1))+
+                # geom_errorbar(mapping=aes(x=stage, ymin=mean-sd, ymax=mean+sd), width=0.1, size=1, color="black")+
+                labs(title="Mean ERP amplitude by cognitive load in occipital regions",
+                     x="Cognitive Load", y = "Mean ERP amplitude", subtitle = "By channel")+
+                facet_wrap(~stim_type)
+
+occi_across_sp.plot
+
+# ggsave(file="par_across_sp.png")
+
+```
+
+
+```{r}
+
+# 1. Parietal
+par_across_sp.plot<- ggplot(data=par_across.dt,
+                       aes(x=as.factor(stim_type), y= mean_amplitude, group=channel,
+                           colour=as.factor(channel))) +
+                geom_point() +
+                geom_line()+
+                labs(color = "Parietal Channels")+
+                # geom_text(aes(label = "mean", angle = 60))+
+                stat_summary(fun=mean,geom="line",lwd=2,aes(group=1))+
+                # geom_errorbar(mapping=aes(x=stage, ymin=mean-sd, ymax=mean+sd), width=0.1, size=1, color="black")+
+                labs(title="Mean ERP amplitude by stimulus type in parietal regions",
+                     x="Stimulus Type", y = "Mean ERP amplitude", subtitle = "By channel")+
+                facet_wrap(~load_condition)
+
+par_across_sp.plot
+
+
+ # 2. Frontal
+front_across_sp.plot<- ggplot(data=front_across.dt,
+                       aes(x=as.factor(stim_type), y= mean_amplitude, group=channel,
+                           colour=as.factor(channel))) +
+                geom_point() +
+                geom_line()+
+                labs(color = "Frontal Channels")+
+                # geom_text(aes(label = "mean", angle = 60))+
+                stat_summary(fun=mean,geom="line",lwd=2,aes(group=1))+
+                # geom_errorbar(mapping=aes(x=stage, ymin=mean-sd, ymax=mean+sd), width=0.1, size=1, color="black")+
+                labs(title="Mean ERP amplitude by stimulus type in frontal regions",
+                     x="Stimulus Type", y = "Mean ERP amplitude", subtitle = "By channel")+
+                facet_wrap(~load_condition)
+
+front_across_sp.plot
+
+# 3. Occipital 
+
+occi_across_sp.plot<- ggplot(data=occi_across.dt,
+                       aes(x=as.factor(stim_type), y= mean_amplitude, group=channel,
+                           colour=as.factor(channel))) +
+                geom_point() +
+                geom_line()+
+                labs(color = "Occipital Channels")+
+                # geom_text(aes(label = "mean", angle = 60))+
+                stat_summary(fun=mean,geom="line",lwd=2,aes(group=1))+
+                # geom_errorbar(mapping=aes(x=stage, ymin=mean-sd, ymax=mean+sd), width=0.1, size=1, color="black")+
+                labs(title="Mean ERP amplitude by stimlus type in occipital regions",
+                     x="Stimulus Type", y = "Mean ERP amplitude", subtitle = "By channel")+
+                facet_wrap(~load_condition)
+
+occi_across_sp.plot
+```
+
