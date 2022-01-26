@@ -1,0 +1,1029 @@
+---
+title: "Behavioural Analysis Tacit Coordination"
+author: "Katerina Christodoulou"
+date: "2/22/2021"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Preperation: Preperation of the WD, the packages-to-use and the data. 
+
+### Directory
+```{r}
+# Clear R enviroment
+rm(list=ls())
+
+# Set working directory
+setwd("C:/Users/katec/Desktop/Major_Project/5. Analysis/Behavioural")
+
+```
+
+### Loaded Libraries
+
+```{r echo=TRUE}
+library(data.table)
+library(tidyverse)
+library(ggplot2)
+library(psych)
+library(plotfunctions)
+library(plyr); library(dplyr)
+#library(cowplot) #for manuscript ready figures ????????????????????????
+
+library(lme4)
+library(lmerTest)# to get p-value estimations that are not part of the standard lme4 packages
+library(emmeans)
+library(Hmisc) 
+library(mltools)
+
+library(sjPlot) #for plotting lmer and glmer mods
+library(sjmisc) 
+library(effects)
+library(sjstats) #use for r2 functions
+
+library(ggeffects) #plotting glmer probabilities
+library(magrittr)
+library(splines)
+
+```
+
+### Data Importation
+
+
+```{r data_all, eval = TRUE, echo=FALSE}
+data_all <- NULL
+files<- list.files(pattern = "*.csv")
+for (i in 1:length(files)) {
+  # assign selected columns from the read file in the file list to a temp variable
+  tmp <- assign(files[i], select(as.data.table(fread(files[i])), subject_nr,load_condition, 
+                                 stim_type, fully_correct, any_correct, 
+                                 semi_correct, correct, image_set, image_num_p1_resp_1, 
+                                 image_num_p2_resp_1))
+  tmp$trial <- 1:nrow(tmp)
+  n_trials <- nrow(tmp)/2
+  tmp$block <- ifelse(as.numeric(rownames(tmp)) < (n_trials+1), "1", "2")
+  
+  data_all <- rbind(data_all,tmp)
+}
+
+
+data_all[, stim_type := as.factor(stim_type)] # in dt chr are not by default converted into factors
+data_all[, load_condition := as.factor(load_condition)] 
+data_all[, block := as.factor(block)] 
+data_all[, correct := as.numeric(correct)] 
+
+```
+
+
+## Exploring the Data
+
+Explore the data for missing values & visually display it to understand what is in the dataset and what characteristics may the data exhibit.
+
+#### Missing Values
+
+```{r}
+
+which(!complete.cases(data_all))
+
+```
+[x] There appears to be no missing values
+
+
+#### Descriptives
+
+##### Define function for SE
+```{r}
+
+se <- function(x) sqrt(var(x)/length(x))
+
+```
+
+
+##### Mean matching accuracy by stimulus type & by load condition
+
+Get the mean accuracy of each condition to get a rough idea of the data & conditions
+(*practicing on 3 different ways*)
+
+```{r}
+subdat_s <- aggregate(correct ~ stim_type,
+          data_all,
+          mean)
+subdat_l <- aggregate(correct ~ load_condition,
+          data_all,
+          mean)
+subdat <- cbind(subdat_l, subdat_s)
+```
+
+
+Alternative(a):
+
+```{r}
+# Get the mean & standard deviation of mean accuracy by each condition
+
+sub_dat <- data.table(data_all)[,.(stim_type, load_condition, correct)]
+sub_dat[,`:=`(mean_corr = round(mean(correct),2), sd_corr= round(sd(correct),2)), by= .(stim_type, load_condition)]
+sub_dat[,correct:=NULL]
+descr_data<- sub_dat %>% distinct(mean_corr, .keep_all = TRUE)
+```
+Alternative(b):
+```{r}
+descr_data2 <- ddply(data_all,  c("load_condition", "stim_type"), summarise,
+                mean_corr = round(mean(correct),2), sd_corr = round(sd(correct),2), 
+                se_corr = round(se(correct), 2))
+```
+
+
+##### Mean matching accuracy by stimulus type, load condition and **block**
+
+```{r}
+descr_data3<- ddply(data_all,  c("load_condition", "stim_type", "block"), summarise,
+                mean_corr = round(mean(correct),2), 
+                sd_corr = round(sd(correct),2), 
+                se_correct = round(se(correct), 2))
+
+descr_data3.df<- as.data.frame(descr_data3)
+
+
+```
+
+
+### Visualisations of the data
+
+#### Plotting mean accuracy by stimulus type and load condition
+
+Base Plot 1: barplot of x = stim_type, y= coord_idx, fill= load
+
+```{r}
+base_plot <- ggplot(data=descr_data2,
+                    aes(x=stim_type, y=mean_corr, fill=load_condition)) +
+  geom_bar(stat="identity", position= position_dodge(), width= 0.9) +
+  geom_errorbar(aes(ymin = mean_corr-se_corr, ymax = mean_corr+se_corr),  
+                width=.5, position=position_dodge(0.9)) + # weird error bars
+  geom_text(aes(label= mean_corr), color = "white", position = position_dodge(1), size=3.5)+
+  scale_fill_brewer(palette="Set1")+
+  xlab('Stimulus Type') +
+  ylab('Coordination Index')+
+  labs(fill='Load condition') +
+  ggtitle("Mean coordination performance by condition")+
+  coord_cartesian(ylim=c(0.0, 1))+
+  theme_minimal()
+
+base_plot
+
+```
+
+Base Plot 2: barplot of x = load, y= coord_idx, fill= stim_type
+
+```{r}
+base_plot2 <- ggplot(data=descr_data2,
+                    aes(x=load_condition, y= mean_corr, fill=stim_type)) +
+  geom_bar(stat="identity", position= position_dodge(), width= 0.9) +
+  geom_errorbar(aes(ymin = mean_corr-se_corr, ymax = mean_corr+se_corr),  
+                width=.5, position=position_dodge(0.9))+
+  geom_text(aes(label= mean_corr), color = "white", position = position_dodge(1), size=3.5)+
+  scale_fill_brewer(palette="Set1")+
+  xlab('Load Condition') +
+  ylab('Coordination Index')+
+  labs(fill='Stimulus Type') +
+  ggtitle("Mean coordination performance by condition")+
+  theme_minimal()+
+  coord_cartesian(ylim=c(0.0, 1))
+  
+  
+  
+base_plot2
+
+```
+
+#### Plotting mean accuracy in two blocks by condition
+
+```{r}
+# data preperation
+base3 <- tidyr::unite(descr_data3.df,"st_lc",stim_type,load_condition,remove = T)
+
+# plot
+base_plot3 <- ggplot(data=base3,
+                     aes(x=block, y= mean_corr, fill=st_lc)) +
+  geom_bar(stat="identity", position= position_dodge( width= 0.9)) +
+  # geom_errorbar(aes(ymin = mean_corr-se_corr, ymax = mean_corr+se_corr),  
+                # width=.5, position=position_dodge(0.9)) +
+  geom_text(aes(label= mean_corr), color = "white", position = position_dodge(1), size=3.5)+
+  scale_fill_brewer(palette="Set1")+
+  labs(title = paste("Mean coordination performance \n between blocks per condition"), x = 'Block',
+y = 'Coordination Index')+
+  labs(fill='Condition') +
+   coord_cartesian(ylim=c(0.0, 1))+
+   theme_minimal()
+  
+base_plot3
+
+```
+
+
+### Check for influential points
+ 
+Look for pairs that significantly deviate.
+```{r}
+# General mean accuracy for each pair:
+pair_mean_acc <- ddply(data_all, c("subject_nr"), 
+                        summarise,
+                        prop_cor=mean(correct, na.rm=FALSE),
+                        prop_any_cor=mean(any_correct, na.rm=FALSE))
+#Overall mean accuracy of participants & sd
+overall_mean_acc <- data.table(MeanAcc = round(mean(pair_mean_acc$prop_cor), 2), SDAcc =round(sd(pair_mean_acc$prop_cor), 2)) 
+
+
+#scatterplot for the different pairs (possible outliers) 
+pair_mean_plot<- ggplot(data=pair_mean_acc,
+                       aes(x=subject_nr, y= prop_cor)) +
+                       geom_point( color="blueviolet") +
+                       labs(title="Mean matching accuracy per pair",
+                       x="pairs", y = "mean accuracy") +
+                       coord_cartesian(ylim=c(0.0, 1))+
+                       geom_hline(aes(yintercept = 0.644, linetype="Mean = .64"), 
+                                  color = "red", size=0.7, show.legend = TRUE)+
+  
+                       theme_minimal()
+pair_mean_plot
+
+
+# Checks - Removes outliers (> 3 SD)   
+
+by(data_all,data_all$subject_nr, 
+    function(z) z$correct[abs(z$correct-mean(z$correct))< 3*sd(z$correct)]) # none
+
+
+
+```
+
+
+### Other insights
+
+Estimate the mean matching accuracy for each pair by block & condition
+```{r}
+pair_descr_dat <- ddply(data_all, c("subject_nr", "load_condition", "stim_type", "block"), 
+                 summarise,
+                 correct_prop=mean(correct),
+                 se_cor_prop=se(correct),
+                 correct_any_prop=mean(any_correct),
+                 se_cor_any_prop=se(any_correct))
+pair_descr_dat
+
+
+
+# Spaghetti plot between blocks for each pair + mean 
+
+block_mean_plot<- ggplot(data=pair_descr_dat,
+                       aes(x=as.factor(block), y= correct_prop, group=subject_nr,
+                           colour=as.factor(subject_nr))) +
+                geom_point() +
+                geom_line()+
+                theme(legend.position = "none")+
+                stat_summary(fun=mean,geom="line",lwd=2,aes(group=1))+
+                labs(title="Coordination performance for each pair by block",
+                     x="block", y = "Coordination Index")
+ # facet_wrap(~ stim_type + load_condition)  # They only show one observation..Why? Remake.
+  # facet_wrap(~ load_condition)
+                
+block_mean_plot
+```
+
+This spaghetti plot shows a general upward trend moving from block 1 to block 2, implying that subjs become better by time. However, we can also see a lot of individual differences. 
+
+### Mixed-effects logistic regression GLMER:
+Glemrs are used to binary outcome variables. Log odds of the outcomes 
+are modeled as a linear combination of the predictor variables 
+when data have both fixed and random effects.
+
+\Note {Odds (more technically the odds of success) is defined as probability of success/probability of failure
+Log odds is the logarithm of the odds.
+Conversion to log odds results in symmetry around zero, which is easier for analysis}
+
+
+
+##### Assumptions
+1. random effects intercepts and slopes are normally distributed.
+2. relationship between  the numeric predictors to the parameter of interest, via logit function
+3. Appropriate estimation of variance
+
+
+###### 1. Glmer with block
+```{r}
+# Note: 
+# parameter optimization = selection of parameter values (= weights+biases), 
+# which are optimal in some desired sense 
+
+
+#Null Model
+null_model <- glmer(correct ~ stim_type + (1 |subject_nr),
+                data=data_all, 
+                family="binomial", 
+                control=glmerControl(optimizer = "bobyqa"))
+
+summary(null_model)
+
+data_all[, load_condition := relevel(load_condition, "low")] 
+
+# Reduced Model
+reduced_model <- glmer(correct ~ stim_type + block + (1 |subject_nr),
+                    data=data_all, 
+                    family="binomial", 
+                    control=glmerControl(optimizer = "bobyqa"))
+summary(reduced_model)
+
+# Comparison A
+anova(null_model, reduced_model)
+
+#Full Model
+full_model <- glmer(correct ~ stim_type + block + load_condition + (1|subject_nr),
+                    data=data_all, 
+                    family="binomial", 
+                    control=glmerControl(optimizer = "bobyqa"))
+
+summary(full_model)
+
+#Comparison B
+anova(full_model, reduced_model)
+
+
+# Interaction btw stim * load
+int_model1 <- glmer(correct ~ stim_type + block + load_condition + stim_type:load_condition +
+                       (1|subject_nr),
+                     data=data_all, 
+                     family="binomial", 
+                     control=glmerControl(optimizer = "bobyqa"))
+
+# Comparison C
+anova(int_model1, full_model) #interaction not significant
+
+
+# interaction btw stim * block 
+int_model2 <- glmer(correct ~ stim_type + block + load_condition + stim_type:block +
+                       (1|subject_nr),
+                     data=data_all,
+                     family="binomial",
+                     control=glmerControl(optimizer = "bobyqa"))
+summary(int_model2)  
+
+# Comparison D
+anova(int_model2, full_model) # NOT SIGNIFICANT
+
+#Interaction btw load * block
+int_model3 <- glmer(correct ~ stim_type + block + load_condition + load_condition:block +
+                      (1|subject_nr),
+                    data=data_all,
+                    family="binomial",
+                    control=glmerControl(optimizer = "bobyqa"))
+summary(int_model3)  
+
+# Comparison E
+anova(int_model3, full_model)
+
+# 3way interaction stim*load*block
+
+int_model4 <- glmer(correct ~ stim_type + block + load_condition + stim_type:load_condition:block +
+                       (1|subject_nr),
+                     data=data_all, 
+                     family="binomial", 
+                     control=glmerControl(optimizer = "bobyqa"))
+summary(int_model4)
+
+# Comparison F
+anova(int_model4, int_model3)  # significant, but warning on deficient matrix; dropping columns (too complex - not supported?) 
+
+```
+
+Plot Predicted probabilities from the model following [example](https://cran.r-project.org/web/packages/ggeffects/vignettes/practical_logisticmixedmodel.html) 
+by Daniel Lüdecke
+
+```{r}
+ggpredict(null_model, "stim_type")
+marginal_effects_fullmodel <- as.data.table(ggpredict(full_model, c("stim_type", "load_condition", "block")))
+
+
+# plot using the pipe (!!!!) : Check this
+me <- ggpredict(full_model, "stim_type")
+plot(me)
+
+marg_effects_fullmd <- ggpredict(full_model, c("stim_type", "load_condition", "block")) %>% plot(color = "Set1")
+marg_effects_fullmd
+#marg_effects_int_md <- ggpredict(int_model4, c("stim_type", "load_condition", "block")) %>% plot(color = "Set1")
+
+
+
+```
+
+###### 2. Glmer without block
+
+```{r}
+nll_model <- glmer(correct ~ stim_type + (1 |subject_nr),
+                    data=data_all, 
+                    family="binomial", 
+                    control=glmerControl(optimizer = "bobyqa"))
+
+summary(nll_model)
+
+data_all[, load_condition := relevel(load_condition, "high")] 
+
+
+# Full model
+fll_model <- glmer(correct ~ stim_type + load_condition + (1|subject_nr),
+                    data=data_all, 
+                    family="binomial", 
+                    control=glmerControl(optimizer = "bobyqa"))
+
+summary(fll_model)
+
+anova(fll_model, nll_model)
+
+
+# Interaction btw stim * load
+intrct_model <- glmer(correct ~ stim_type + load_condition + stim_type*load_condition + (1|subject_nr),
+                      data=data_all, 
+                      family="binomial", 
+                      control=glmerControl(optimizer = "bobyqa"))
+
+summary(intrct_model)
+
+#comparison b
+anova(fll_model, intrct_model) #not significant 
+
+```
+
+
+### Linear Mixe Models Analysis
+#### Data preparation
+
+Prepare the data so as to be continuous to use them in the models. 
+
+1. Basic Structure: take the mean of each pair within each block
+
+```{r}
+data_all[, block:=droplevels(block)]
+data_all[, stim_type:=droplevels(stim_type)]
+
+
+blocked_data <- data.table(data_all)[,.(subject_nr, stim_type, load_condition, correct, trial, block)]
+blocked_data[,`:=`(matching_freq=round(mean(correct),2), se_mf= round(se(correct),2)), by= .(subject_nr, block)]
+
+blocked_data_uni<- blocked_data %>% distinct(subject_nr, block, .keep_all = TRUE)
+```
+
+2. Create bins and split the data into 10 bins per block for each pair of participants
+
+```{r}
+
+
+# define bin width
+bin_width = 10
+
+# cut the data
+blocked_data[,`:=`(bin = cut(trial, breaks = seq(1, nrow(blocked_data)+1, by=bin_width), right=FALSE))]
+
+# Create a data table with binned data & drop the overall matching frequency & se columns
+binned_data <- blocked_data
+binned_data[,matching_freq:=NULL]
+binned_data[,se_mf:=NULL]
+binned_data[,bin:= as.numeric(bin)]
+
+
+# find the matching frequency within each pair bin
+binned_data[,`:=`(matching_freq=round(mean(correct),2), se= round(se(correct),2)), by= .(subject_nr, bin)]
+binned_data <- binned_data %>% distinct(subject_nr, bin, .keep_all = TRUE)
+
+```
+
+
+
+
+
+#### 1.a. LMM in the binned data (block included)
+
+```{r}
+#null model 1 (wihtout factor of interest)
+nullmdl1<-lmer(matching_freq ~ stim_type + (1|subject_nr) , data = binned_data, REML = FALSE)
+summary (nullmdl1)
+
+#reduced model 1 (with block)
+reducedmdl<-lmer(matching_freq ~ stim_type + block + (1|subject_nr) , data = binned_data, REML = FALSE)
+summary(reducedmdl)
+
+#comparison A
+anova(nullmdl1, reducedmdl) #significant but higher AIC value
+
+#full model (with cognitive _load)
+fullmdl<-lmer(matching_freq ~ stim_type + load_condition + (1|subject_nr) , data = binned_data, REML = FALSE)
+summary(fullmdl)
+
+#comparison B
+anova(nullmdl1, fullmdl)
+
+
+# interaction model 1 (stim & load)
+intmdl1<-lmer(matching_freq ~ stim_type + load_condition + stim_type*load_condition + 
+                 (1|subject_nr) , data = binned_data, REML = FALSE)
+summary(intmdl1)
+
+#comparison C
+anova(fullmdl, intmdl1)   #not significant --> DROP   #but low AIC
+
+
+#full model 2 (adding block)
+fullmdl2<-lmer(matching_freq ~ stim_type + load_condition + block + (1|subject_nr) , 
+               data = binned_data, REML = FALSE)
+summary(fullmdl2)
+
+
+#comparison D
+anova(fullmdl2, reducedmdl)
+anova(fullmdl, fullmdl2) #significant
+
+
+
+#interaction model 4 (stim* load)
+intmdl4<-lmer(matching_freq ~ stim_type + load_condition + block + load_condition * stim_type + 
+                 (1|subject_nr) , data = binned_data, REML = FALSE)
+summary(intmdl4)
+
+#comparison E
+anova(intmdl4, fullmdl2) # not sign
+
+
+
+#interaction model 2 ( stim * block )
+intmdl2<-lmer(matching_freq ~ stim_type + load_condition + block + stim_type * block + 
+                 (1|subject_nr) , data = binned_data, REML = FALSE)
+summary(intmdl2)
+
+#comparison F
+anova(fullmdl2, intmdl2) # Not significant--> DROP
+
+
+#interaction model 5 (interaction load*block)
+int_mdl3<-lmer(matching_freq ~ stim_type + load_condition + block + load_condition * block + 
+                 (1|subject_nr) , data = binned_data, REML = FALSE)
+summary(int_mdl3)
+
+#comparison G
+anova(fullmdl2, int_mdl3) # significant --> there is an effect of time in load
+
+
+
+# 3-way interaction
+intmdl5<-lmer(matching_freq ~ stim_type + load_condition + block + stim_type*load_condition * block + 
+                 (1|subject_nr) , data = binned_data, REML = FALSE)
+summary(intmdl5)
+
+#comparison J
+anova(int_mdl3, intmdl5)  # almost significant ~
+
+```
+
+#### 1.b. LMM in the binned data with bin as predictor (block included)
+
+```{r}
+
+# careful: bin should be numeric, not factor!
+
+n_mdl<-lmer(matching_freq ~ stim_type + (1|subject_nr) , data = binned_data, REML = FALSE)
+summary (n_mdl)
+
+
+
+#reduced model (with bin)
+r_mdl<-lmer(matching_freq ~ stim_type + bin + (1|subject_nr) , data = binned_data, REML = FALSE)
+summary(r_mdl)
+
+#comparison A
+anova(n_mdl, r_mdl)
+
+#full model 
+f_mdl<-lmer(matching_freq ~ stim_type + bin + load_condition + (1|subject_nr) , data = binned_data, REML = FALSE)
+summary(f_mdl)
+
+#comparison B
+anova(r_mdl, f_mdl)
+
+
+#interaction 1
+int1_mdl<-lmer(matching_freq ~ stim_type + bin + load_condition + stim_type*load_condition + (1|subject_nr) , data = binned_data, REML = FALSE)
+summary(int1_mdl)
+
+#comparison C
+anova(int1_mdl, f_mdl)
+
+#interaction 2
+int2_mdl<-lmer(matching_freq ~ stim_type + bin + load_condition + bin*load_condition + (1|subject_nr) , data = binned_data, REML = FALSE)
+summary(int2_mdl)
+
+#comparison D
+anova(int2_mdl, f_mdl)
+
+
+#interaction 3-way
+int3_mdl<-lmer(matching_freq ~ stim_type + bin + load_condition + bin*load_condition + bin*load_condition*stim_type + (1|subject_nr) , data = binned_data, REML = FALSE)
+summary(int3_mdl)
+
+#comparison E
+anova(int3_mdl, int2_mdl)
+```
+
+
+#### 2.a. LMM in mean data 
+
+```{r}
+# data preparation 
+lmm_data <- data.table(data_all)[,.(subject_nr, stim_type, load_condition, correct, trial, block)]
+lmm_data[,`:=`(mean_correct=round(mean(correct),2), sd_mc= round(se(correct),2)), by= .(subject_nr, block)]
+
+lmm_data<- lmm_data %>% distinct(subject_nr, block, .keep_all = TRUE)
+# Models
+
+#nullmodel
+nullmodel<-lmer(mean_correct ~ stim_type + (1|subject_nr) , data = lmm_data, REML = FALSE)
+summary (nullmodel)
+
+#reducedmodel
+reducedmodel<- lmer(mean_correct ~ stim_type + block + (1|subject_nr) , data = lmm_data, REML = FALSE)
+summary (reducedmodel)
+
+#comparison A
+anova(reducedmodel, nullmodel)
+
+#fullmodel
+fullmodel <- lmer(mean_correct ~ stim_type + block + load_condition + (1|subject_nr) , data = lmm_data, REML = FALSE)
+summary (fullmodel)
+
+
+#comparison B
+anova(fullmodel, reducedmodel)
+# anova(fullmodel, nullmodel)
+
+#intmodel1   
+interaction_model <-lmer(mean_correct ~ stim_type + block + load_condition + stim_type*block + (1|subject_nr) , data = lmm_data, REML = FALSE)
+summary (interaction_model)
+
+#comparison C
+anova(interaction_model, fullmodel) #not sign
+
+#interaction model 2
+interaction_model2 <-lmer(mean_correct ~ stim_type + block + load_condition + stim_type*load_condition + (1|subject_nr) , data = lmm_data, REML = FALSE)
+summary (interaction_model2)
+
+#comparison D
+anova(interaction_model2, fullmodel) #not sign
+
+#interaction model 3
+interaction_model3 <-lmer(mean_correct ~ stim_type + block + load_condition + block*load_condition + (1|subject_nr) , data = lmm_data, REML = FALSE)
+summary (interaction_model3)
+
+#comparison E
+anova(interaction_model3, fullmodel)
+
+#interaction model 4 : 3way
+interaction_model4 <-lmer(mean_correct ~ stim_type + block + load_condition + block*load_condition*stim_type + (1|subject_nr) , data = lmm_data, REML = FALSE)
+summary (interaction_model4)
+
+#comparison F
+anova(interaction_model3, interaction_model4) #not sing
+anova(interaction_model4, fullmodel) # not sign
+
+```
+
+#### 2.b. LMM in mean data without block
+
+```{r}
+#nullmodel
+null_mdl<-lmer(mean_correct ~ stim_type + (1|subject_nr) , data = lmm_data, REML = FALSE)
+summary (null_mdl)
+
+
+#fullmodel
+full_mdl <- lmer(mean_correct ~ stim_type + load_condition + (1|subject_nr) , data = lmm_data, REML = FALSE)
+summary (full_mdl)
+
+
+# a boxplot:
+# the shape of the distribution, its central value, and its variability
+boxplot(mean_correct ~ stim_type + load_condition, data= lmm_data, boxfill = lmm_data$load_condition)
+
+boxplot.lmm_data<- ggplot(lmm_data, aes(stim_type, mean_correct, fill = load_condition)) + 
+                    geom_boxplot()+
+                    scale_fill_manual(values=c("low" = "darkslateblue", "high" = "tomato3"))+
+                    theme_minimal()+
+                    labs(title="Mean matching accuracy per condition",x="Stimulus Tupe",
+                         y = "Mean Accuracy", fill = "Load Condition")+
+                    theme(legend.justification = "center", plot.title = element_text(hjust = 0))
+
+#comparison a
+anova(full_mdl, null_mdl) #sing (better BIC but not AIC)
+
+
+#intmodel1   
+intrct_mdl <-lmer(mean_correct ~ stim_type + load_condition + stim_type*load_condition + (1|subject_nr) , data = lmm_data, REML = FALSE)
+summary (intrct_mdl)
+
+#comparison b
+anova(intrct_mdl, full_mdl) #not significant (but better AIC &BIC)
+
+```
+
+
+#### 2.c. LMM-Checking Assumptions 
+1. Normality of model residuals
+2. Linearity & homoscedasticity
+
+For Binned data with bin as a predictor 
+```{r}
+# Normality : 
+# a. QQ-plot
+qqnorm(residuals(int2_mdl))
+qqline(residuals(int2_mdl), col = "steelblue", lwd = 2)
+# b. Histogram 
+hist(residuals(int2_mdl))
+
+# Linearity & Hmscdasticity:
+plot(fitted(int2_mdl),residuals(int2_mdl))
+```
+
+[x] There are no obvious violations of the assumptions 
+
+
+
+
+
+
+
+
+# Folded Data: Collapsed block
+If we would be interested to see how learning evolves or the actual effect and resetting of the block change, we shall continue in the above away. However, we currently just want to see the effects of the different conditions. Therefore, we will collapse the blocks. 
+
+
+```{r}
+#set the order of the dataset
+setcolorder(data_all, c("subject_nr", "trial", "load_condition", "stim_type", "correct"))
+
+# clear from unwanted columns
+data_all[,(6:12):= NULL]
+
+#collapse blocks
+first_fold <- data_all[trial <= 90]
+second_fold <- data_all[trial > 90]
+second_fold<- mutate(second_fold, trial = trial - 90)
+data_folded <- rbind(first_fold, second_fold)
+
+```
+
+Create bins and calculate the mean. 
+
+```{r}
+# define bin width
+bin_width = 10
+
+# cut the data
+data_folded[,`:=`(bin = cut(trial, breaks = seq(1, nrow(data_folded)+1, by=bin_width), right=FALSE))]
+
+# Create a data table with binned data & drop the overall matching frequency & se columns
+binned_fdata <- data_folded
+binned_fdata[,bin:= as.numeric(bin)]
+
+# find the matching frequency within each pair bin
+binned_fdata[,`:=`(coord_indx= mean(correct), se= se(correct)), by= .(subject_nr, bin)]
+binned_fdata <- binned_fdata %>% distinct(subject_nr, bin, .keep_all = TRUE)
+```
+
+## LMM in folded-binned data
+
+```{r}
+#intercept only model  
+intercept_mdl<-lmer(coord_indx ~ 1 + (1|subject_nr) , data = binned_fdata, REML = FALSE)
+
+#time model 
+time_mdl<-lmer(coord_indx ~ bin + (1|subject_nr) , data = binned_fdata, REML = FALSE)
+
+
+#model comparison
+anova(intercept_mdl, time_mdl)
+
+summary(time_mdl)
+
+
+formatC(3.320e-02, digits = 4)
+```
+
+```{r}
+
+#time model 
+time_mdl<-lmer(coord_indx ~ bin + (1|subject_nr) , data = binned_fdata, REML = FALSE)
+
+#reduced_model 
+reduced_mdl<-lmer(coord_indx ~ bin + stim_type + (1|subject_nr) , data = binned_fdata, REML = FALSE)
+
+
+#model comparison
+anova(time_mdl, reduced_mdl)
+
+summary(reduced_mdl)
+
+```
+
+```{r}
+#time model 
+time_mdl<-lmer(coord_indx ~ bin + (1|subject_nr) , data = binned_fdata, REML = FALSE)
+
+#reduced_model 
+full_mdl<-lmer(coord_indx ~ bin + load_condition + (1|subject_nr) , data = binned_fdata, REML = FALSE)
+
+
+#model comparison
+anova(time_mdl, full_mdl)
+
+summary(full_mdl)
+
+```
+
+
+
+
+Checking Assumptions 
+```{r}
+# Normality : 
+# a. QQ-plot
+qqnorm(residuals(full_mdl))
+qqline(residuals(full_mdl), col = "steelblue", lwd = 2)
+# b. Histogram 
+hist(residuals(full_mdl))
+
+# Linearity & Hmscdasticity:
+plot(fitted(full_mdl),residuals(full_mdl))
+```
+```{r}
+
+#reduced_model 
+full_mdl<-lmer(coord_indx ~ bin + load_condition + (1|subject_nr) , data = binned_fdata, REML = FALSE)
+
+#time model 
+interaction_mdl<-lmer(coord_indx ~ bin*load_condition + (1|subject_nr) , data = binned_fdata, REML = FALSE)
+
+
+
+#model comparison
+anova(interaction_mdl, full_mdl)
+
+summary(interaction_mdl)
+
+```
+
+
+### Presenting the data
+
+#### Plotting the data
+
+1. How much does each predictor affects our DV over time? 
+Plot the coordination index (y) over the binned data (x) for stimulus type & cognitive load
+```{r, Coordinating performance over time}
+# Plot binned_data as a function of time
+bin_plot<- ggplot(binned_fdata, aes(x = bin, y = coord_indx)) + 
+  geom_smooth()+
+  geom_point(position = "jitter", alpha = .3)+
+  # geom_vline(aes(xintercept = 10, linetype = "dashed"))+
+  # geom_point(aes(x = bin, y = matching_freq)+
+  # scale_fill_manual(values= "blue") +
+  # scale_linetype_manual(name= "Block Change", values = 9) +
+  labs(x = "Time (bins)", y = "Coordination Index" 
+       ) + 
+  theme_minimal()+
+  expand_limits(y=c(0, 1))
+
+title = "Coordinating performance over time"
+
+
+bin_plot
+```
+
+
+```{r}
+# Plot binned_data + load condition
+load_plot <- ggplot(binned_fdata, aes(x = bin, y = coord_indx, colour= load_condition)) + 
+              geom_smooth()+
+              geom_point(position = "jitter", alpha = .3)+
+              # geom_vline(aes(xintercept = 10, linetype = "dashed"))+
+              scale_color_manual(values=c("low" = "darkslateblue", "high" = "tomato3"))+              
+              labs(x = "Time (bins)", y = "Coordination Index" ) + 
+            
+              # scale_linetype_manual(name= "Block Change", values = 9) +
+              expand_limits(y=c(0, 1))+
+              guides(col=guide_legend("WM load")) +
+              theme_minimal()
+ 
+   
+title = "Mean Matching accuracy by cognitive load over time"             
+load_plot + theme(legend.position="bottom")
+
+```
+
+```{r}
+
+# Plot binned_data + stim_type
+stim_type_plot<- ggplot(binned_fdata) + 
+                  geom_smooth(aes(x = bin, y = coord_indx, colour= stim_type))+
+                  # geom_vline(aes(xintercept = 10, linetype = "dashed"))+
+                  # geom_point(aes(x = bin, y = matching_freq, colour= stim_type))+ # each point represents the mean #acc of each pair in x bin.
+                  scale_color_manual(values=c("color" = "darkslateblue", "shape" = "tomato3"))+
+                  # scale_linetype_manual(name= "Block Change", values = 9) +
+                  labs(x = "Trial bin", y = "Mean Accuracy", 
+                       title = "Mean Matching accuracy by stimulus type over time") + 
+                  theme_minimal()+
+                  expand_limits(y=c(0, 1))
+
+stim_type_plot
+```
+
+```{r}
+# Plot binned_data + load condition
+load_plot <- ggplot(binned_fdata) + 
+              geom_smooth(aes(x = bin, y = coord_indx, colour= load_condition))+
+              # geom_vline(aes(xintercept = 10, linetype = "dashed"))+
+              scale_color_manual(values=c("low" = "darkslateblue", "high" = "tomato3"))+              
+   labs(x = "Trial bin", y = "Mean Accuracy", 
+                   title = "Mean Matching accuracy by cognitive load over time") + 
+              # scale_linetype_manual(name= "Block Change", values = 9) +
+              expand_limits(y=c(0, 1))+
+              theme_minimal()+
+              facet_grid(~ stim_type)
+load_plot
+
+```
+
+Alternative
+```{r}
+# Plot model estimates WITH data---------------------
+# Step 1: Save the effect size estimates into a data.frame
+
+# effect function. term= the fixed effect you want to get data on,
+# mod= name of your model.
+
+effects_int_model <- effects::effect(term= "bin", mod= int2_mdl)
+summary(effects_int_model)
+
+# Save the effects values as a df:
+x_int_model <- as.data.frame(effects_int_model)
+
+
+#Step 2: Use the effects value df (created above) to plot the estimates
+
+#1 Create empty plot
+bin_lmmplot <- ggplot() + 
+
+#2 Add geom_points() from the DATA: bin data on the x axis (independent va= c.urchinden) and matching data on the y-axis (response var)
+  # geom_point(data=binned_data, aes(bin, matching_freq)) + 
+  
+#3 Add geom_point for the MODEL estimates (data= x_urchi here, this is the dataset you created in the above chunk). We will change the color so they are distinguishable from the data
+   geom_point(data=x_int_model, aes(x=bin, y=fit), color="blue") +
+  
+#4 Add geom_line for the MODEL estimates. Change the color to match the estimate points (ie whatever color you chose for step3)
+  geom_line(data=x_int_model, aes(x=bin, y=fit), color="blue") +
+#5 Add geom_ribbon that has the CI limits for the model estimates
+  geom_ribbon(data= x_int_model, aes(x=bin, ymin=lower, ymax=upper), alpha= 0.3, fill="blue") +
+#6 Edit the labels as you see fit!
+  labs(x = "Time (trial bin)", y = "Coordination Index", 
+       title = "Coordination performance over time") + 
+  geom_vline(aes(xintercept = 10, linetype = "dashed"))+
+  scale_linetype_manual(name= "Block Change", values = 9)+
+  theme_minimal()+
+  theme(legend.key.size = unit(0.2, "cm"))
+
+
+
+bin_lmmplot
+
+```
+
+
+
+
+2. Create a table of the model estimates
+([example](https://lmudge13.github.io/sample_code/mixed_effects.html))
+
+```{r}
+int2_mdl_table<- sjPlot::tab_model(int2_mdl, 
+                  show.re.var= TRUE, 
+                  pred.labels =c("(Intercept)", "Stimulus Type (shape)", "Trial Bin", "Cognitive Load (low)", 
+                                 "Trial Bin * Cognitive Load (low)"),
+                  dv.labels= "Effects of Predictors on Coordination Index \nof the Interaction model",
+                  file="interaction_table.html")
+
+
+```
+
+### The End
+
+
+### Change of plots to reporting RAW DATA
+https://stackoverflow.com/questions/52778386/how-to-plot-raw-data-but-use-predicted-values-for-line-fit-in-ggplot2-r
