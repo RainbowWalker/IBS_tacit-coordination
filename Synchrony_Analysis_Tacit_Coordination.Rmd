@@ -1,0 +1,2475 @@
+---
+title: "Synchrony_Analysis_Tacit_Coordination"
+author: "Katerina Christodoulou"
+date: "3/4/2021"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Preperation: Preperation of the WD, libraries and data. 
+
+## Directory
+
+```{r}
+# Clear R enviroment
+rm(list=ls())
+
+# Set working directory
+setwd("C:/Users/katec/Desktop/Major_Project/5. Analysis/Behavioural")
+
+```
+
+## Load Libraries
+
+```{r, message=FALSE, warning=FALSE}
+library(plyr); library(dplyr)
+library(tidyr) 
+library(data.table)
+library(ggplot2)
+
+library(grid)
+library(plotfunctions)
+library(tidyverse)
+library(reshape2)
+
+library(lme4)
+library(lmerTest) # to get p-value estimations that are not part of the standard lme4 packages
+library(emmeans)
+library(Hmisc)
+library(mltools)
+
+```
+
+
+Conditions are: 
+- Low Color: 101
+- Low Shape: 102
+- High Color: 103
+- High Shape: 104
+
+
+## Import Data
+### Whole Brain Analysis (*all EEG electrodes*)
+```{r}
+# Read Data
+synch_indx_val <- read.table("synch_new.dat", header=TRUE)
+
+# Check for NA
+which(!complete.cases(synch_indx_val)) 
+```
+
+
+
+
+# Data Manipulation
+
+### Clear the data - Select channels
+Clear the data from unwanted observations. Keep only the matching channels, session number(pair of subjects), trial and condition. [*clean_synch_channels*]
+
+```{r, echo = False, warning=FALSE, message=FALSE,}
+# Select variables to df
+synch_channels <- synch_indx_val %>%
+  select("session","condition", "trial", "accuracy", "A1_A1", "A2_A2", "A3_A3", "A4_A4", "A5_A5", "A6_A6", "A7_A7","A8_A8", "A9_A9", "A10_A10", "A11_A11", "A12_A12", "A13_A13", "A14_A14", "A15_A15", "A16_A16", "A17_A17", "A18_A18", "A19_A19", "A20_A20", "A21_A21", "A22_A22", "A23_A23", "A24_A24", "A25_A25", "A26_A26", "A27_A27", "A28_A28", "A29_A29", "A30_A30", "A31_A31")
+
+#check for NAs
+which(is.na(synch_channels))
+# apply(is.na(synch_channels), 2, which) # NaN in accuracy, row 995, trial 135, session 14, 102condition
+
+# temporarily remove this row
+clean_synch_channels <- synch_channels[- 2176, ] 
+```
+
+
+
+### Create  Dataset [*Syncrhony_Channels.dt*]
+To-be used for channel_channels analysis
+
+```{r}
+# Split condition 
+synchrony_channels.dt <- as.data.table(clean_synch_channels) 
+
+# load_condition: 1 = "low", 2 = "high"
+synchrony_channels.dt [, load_condition := as.factor("")] [condition == 101 | condition == 102, load_condition := as.factor("low") ] [condition == 103 | condition == 104, load_condition := as.factor("high")]
+# stim_type: 1 = "color", 2 = "shape"
+synchrony_channels.dt [, stim_type := as.factor("")] [condition == 101 | condition == 103, stim_type := as.factor("color") ] [condition == 102 | condition == 104, stim_type := as.factor("shape")]
+# remove condition column
+# synchrony_channels.dt[, condition := NULL]
+
+# # add block
+# synchrony_channels.df <- as.data.frame(synchrony_channels.dt)
+# 
+# for (i in 1:nrow(synchrony_channels.df)){
+#   currtrial = as.numeric(synchrony_channels.df$trial[i])
+#   if (currtrial < 91){
+#     synchrony_channels.df$block[i] = 1
+#   } else  {
+#     synchrony_channels.df$block[i] = 2
+#   }
+# }
+# synchrony_channels.dt<- as.data.table(synchrony_channels.df)
+
+# rearrange columns
+setcolorder(synchrony_channels.dt, c("session", "trial", "condition", "load_condition","stim_type", "accuracy", 
+                                     "A1_A1", "A2_A2", "A3_A3","A4_A4", "A5_A5", "A6_A6", "A7_A7","A8_A8",
+                                     "A9_A9", "A10_A10", "A11_A11", "A12_A12", "A13_A13", "A14_A14", "A15_A15",
+                                     "A16_A16",  "A17_A17", "A18_A18", "A19_A19", "A20_A20", "A21_A21", "A22_A22", 
+                                     "A23_A23", "A24_A24", "A25_A25", "A26_A26", "A27_A27", "A28_A28", 
+                                     "A29_A29", "A30_A30", "A31_A31"))
+
+setkey(synchrony_channels.dt, session, stim_type, load_condition)
+
+
+```
+
+
+
+
+# Synch_mean_pairs
+## Create Dataset [*synch_mean_pairs*]
+Mean_synch by session & condition
+
+### Data preparation
+A dataframe is created with the mean of synchrony for each electrode pair by session and condition. So, a df with 2 rows per session with the mean for each channel. 
+
+```{r}
+synch_mean_pairs_temp = data.frame()
+for (isession in 1:length(unique(clean_synch_channels$session)))
+  {
+    currsession = unique(clean_synch_channels$session)[isession]
+  
+    for (icondition in 1:length(unique(clean_synch_channels$condition)))
+    {
+      currcondition = as.character(unique(clean_synch_channels$condition)[icondition])
+      currdata = subset(clean_synch_channels, session==currsession & condition==currcondition)
+      
+      if (nrow(currdata)==0)
+      {
+        next
+      } else {
+        
+        # calculate mean synchrony per channel
+        mean_synch_A1 = mean(currdata$A1_A1, na.rm=TRUE)
+        mean_synch_A2= mean(currdata$A2_A2,na.rm=TRUE)
+        mean_synch_A3= mean(currdata$A3_A3, na.rm=TRUE)
+        mean_synch_A4= mean(currdata$A4_A4, na.rm=TRUE)
+        mean_synch_A5= mean(currdata$A5_A5, na.rm=TRUE)
+        mean_synch_A6= mean(currdata$A6_A6, na.rm=TRUE)
+        mean_synch_A7= mean(currdata$A7_A7, na.rm=TRUE)
+        mean_synch_A8= mean(currdata$A8_A8, na.rm=TRUE)
+        mean_synch_A9= mean(currdata$A9_A9, na.rm=TRUE)
+        mean_synch_A10= mean(currdata$A10_A10, na.rm=TRUE)
+        mean_synch_A11= mean(currdata$A11_A11, na.rm=TRUE)
+        mean_synch_A12= mean(currdata$A12_A12, na.rm=TRUE)
+        mean_synch_A13= mean(currdata$A13_A13, na.rm=TRUE)
+        mean_synch_A14= mean(currdata$A14_A14, na.rm=TRUE)
+        mean_synch_A15= mean(currdata$A15_A15, na.rm=TRUE)
+        mean_synch_A16= mean(currdata$A16_A16, na.rm=TRUE)
+        mean_synch_A17= mean(currdata$A17_A17, na.rm=TRUE)
+        mean_synch_A18= mean(currdata$A18_A18, na.rm=TRUE)
+        mean_synch_A19= mean(currdata$A19_A19, na.rm=TRUE)
+        mean_synch_A20= mean(currdata$A20_A20, na.rm=TRUE)
+        mean_synch_A21= mean(currdata$A21_A21, na.rm=TRUE)
+        mean_synch_A22= mean(currdata$A22_A22, na.rm=TRUE)
+        mean_synch_A23= mean(currdata$A23_A23, na.rm=TRUE)
+        mean_synch_A24= mean(currdata$A24_A24, na.rm=TRUE)
+        mean_synch_A25= mean(currdata$A25_A25, na.rm=TRUE)
+        mean_synch_A26= mean(currdata$A26_A26, na.rm=TRUE)
+        mean_synch_A27= mean(currdata$A27_A27, na.rm=TRUE)
+        mean_synch_A28= mean(currdata$A28_A28,na.rm=TRUE)
+        mean_synch_A29= mean(currdata$A29_A29, na.rm=TRUE)
+        mean_synch_A30= mean(currdata$A30_A30,na.rm=TRUE)
+        mean_synch_A31= mean(currdata$A31_A31,na.rm=TRUE)
+        
+        # calculate synchrony standard deviation per channel
+        # sd_synch_A1 = sd(currData$A1_A1,  na.rm=TRUE)
+        # sd_synch_A2= sd(currData$A2_A2, na.rm=TRUE)
+        # sd_synch_A3= sd(currData$A3_A3, na.rm=TRUE)
+        # sd_synch_A4= sd(currData$A4_A4,na.rm=TRUE)
+        # sd_synch_A27= sd(currData$A27_A27, na.rm=TRUE)
+        # sd_synch_A28= sd(currData$A28_A28, na.rm=TRUE)
+        # sd_synch_A29= sd(currData$A29_A29, na.rm=TRUE)
+        # sd_synch_A30= sd(currData$A30_A30,  na.rm=TRUE)
+        # sd_synch_A31= sd(currData$A31_A31, na.rm=TRUE)
+        
+        temp_synch_results.df = data.frame(session=currsession,
+                                     condition=currcondition,
+                                     
+                                     mean_synch_A1 = mean_synch_A1,
+                                     mean_synch_A2 = mean_synch_A2,
+                                     mean_synch_A3 = mean_synch_A3,
+                                     mean_synch_A4 = mean_synch_A4,
+                                     mean_synch_A5 = mean_synch_A5,
+                                     mean_synch_A6 = mean_synch_A6,
+                                     mean_synch_A7 = mean_synch_A7,
+                                     mean_synch_A8 = mean_synch_A8,
+                                     mean_synch_A9 = mean_synch_A9,
+                                     mean_synch_A10 = mean_synch_A10,
+                                     mean_synch_A11 = mean_synch_A11,
+                                     mean_synch_A12 = mean_synch_A12,
+                                     mean_synch_A13 = mean_synch_A13,
+                                     mean_synch_A14 = mean_synch_A14,
+                                     mean_synch_A15 = mean_synch_A15,
+                                     mean_synch_A16 = mean_synch_A16,
+                                     mean_synch_A17 = mean_synch_A17,
+                                     mean_synch_A18 = mean_synch_A18,
+                                     mean_synch_A19 = mean_synch_A19,
+                                     mean_synch_A20 = mean_synch_A20,
+                                     mean_synch_A21 = mean_synch_A21,
+                                     mean_synch_A22 = mean_synch_A22,
+                                     mean_synch_A23 = mean_synch_A23,
+                                     mean_synch_A24 = mean_synch_A24,
+                                     mean_synch_A25 = mean_synch_A25,
+                                     mean_synch_A26 = mean_synch_A26,
+                                     mean_synch_A27 = mean_synch_A27,
+                                     mean_synch_A28 = mean_synch_A28,
+                                     mean_synch_A29 = mean_synch_A29,
+                                     mean_synch_A30 = mean_synch_A30, 
+                                     mean_synch_A31 = mean_synch_A31) 
+                                     # sd_synch_A1 = sd_synch_A1,
+                                     # sd_synch_A2 = sd_synch_A2, 
+                                     # sd_synch_A3 = sd_synch_A3,
+                                     # sd_synch_A4 = sd_synch_A4,
+                                     # sd_synch_A27 = sd_synch_A27,
+                                     # sd_synch_A28 = sd_synch_A28,
+                                     # sd_synch_A29 =sd_synch_A29,
+                                     # sd_synch_A30 = sd_synch_A30,
+                                     # sd_synch_A31 = sd_synch_A31)
+        synch_mean_pairs_temp = rbind(synch_mean_pairs_temp,temp_synch_results.df)
+                                     
+        
+      }
+    }
+  }
+
+synchrony_mean_pairs = synch_mean_pairs_temp
+```
+
+
+## Data Visualisation
+
+## Mean synchrony in each electrode pair per condition
+### Step 1: Data preparation 
+A dataframe with the mean over all sessions for each condition is created. So, it produces a df with 4 rows and the mean of each channel in each condition. 
+```{r}
+
+synch_avg_pairs_temp = data.frame()
+for (icondition in 1:length(unique(synchrony_mean_pairs$condition)))
+{
+  currcondition = as.character(unique(synchrony_mean_pairs$condition)[icondition])
+  currdata_2 = subset(synchrony_mean_pairs, condition==currcondition)
+  
+  if (nrow(currdata_2)==0)
+  {
+    next 
+  } else {
+    
+    # calculate mean synchrony per channel
+    avg_synch_A1 = mean(currdata_2$mean_synch_A1,na.rm=TRUE)
+    avg_synch_A2= mean(as.numeric(currdata_2$mean_synch_A2),na.rm=TRUE)
+    avg_synch_A3= mean(as.numeric(currdata_2$mean_synch_A3), na.rm=TRUE)
+    avg_synch_A4= mean(as.numeric(currdata_2$mean_synch_A4), na.rm=TRUE)
+    avg_synch_A5= mean(as.numeric(currdata_2$mean_synch_A5), na.rm=TRUE)
+    avg_synch_A6= mean(as.numeric(currdata_2$mean_synch_A6), na.rm=TRUE)
+    avg_synch_A7= mean(as.numeric(currdata_2$mean_synch_A7), na.rm=TRUE)
+    avg_synch_A8= mean(as.numeric(currdata_2$mean_synch_A8), na.rm=TRUE)
+    avg_synch_A9= mean(as.numeric(currdata_2$mean_synch_A9), na.rm=TRUE)
+    avg_synch_A10= mean(as.numeric(currdata_2$mean_synch_A10), na.rm=TRUE)
+    avg_synch_A11= mean(as.numeric(currdata_2$mean_synch_A11), na.rm=TRUE)
+    avg_synch_A12= mean(as.numeric(currdata_2$mean_synch_A12), na.rm=TRUE)
+    avg_synch_A13= mean(as.numeric(currdata_2$mean_synch_A13), na.rm=TRUE)
+    avg_synch_A14= mean(as.numeric(currdata_2$mean_synch_A14), na.rm=TRUE)
+    avg_synch_A15= mean(as.numeric(currdata_2$mean_synch_A15), na.rm=TRUE)
+    avg_synch_A16= mean(as.numeric(currdata_2$mean_synch_A16), na.rm=TRUE)
+    avg_synch_A17= mean(as.numeric(currdata_2$mean_synch_A17), na.rm=TRUE)
+    avg_synch_A18= mean(as.numeric(currdata_2$mean_synch_A18), na.rm=TRUE)
+    avg_synch_A19= mean(as.numeric(currdata_2$mean_synch_A19), na.rm=TRUE)
+    avg_synch_A20= mean(as.numeric(currdata_2$mean_synch_A20), na.rm=TRUE)
+    avg_synch_A21= mean(as.numeric(currdata_2$mean_synch_A21), na.rm=TRUE)
+    avg_synch_A22= mean(as.numeric(currdata_2$mean_synch_A22), na.rm=TRUE)
+    avg_synch_A23= mean(as.numeric(currdata_2$mean_synch_A23), na.rm=TRUE)
+    avg_synch_A24= mean(as.numeric(currdata_2$mean_synch_A24), na.rm=TRUE)
+    avg_synch_A25= mean(as.numeric(currdata_2$mean_synch_A25), na.rm=TRUE)
+    avg_synch_A26= mean(as.numeric(currdata_2$mean_synch_A26), na.rm=TRUE)
+    avg_synch_A27= mean(as.numeric(currdata_2$mean_synch_A27), na.rm=TRUE)
+    avg_synch_A28= mean(as.numeric(currdata_2$mean_synch_A28),na.rm=TRUE)
+    avg_synch_A29= mean(as.numeric(currdata_2$mean_synch_A29), na.rm=TRUE)
+    avg_synch_A30= mean(as.numeric(currdata_2$mean_synch_A30),na.rm=TRUE)
+    avg_synch_A31= mean(as.numeric(currdata_2$mean_synch_A31),na.rm=TRUE)
+    
+    temp_synch_avg_results.df = data.frame(condition=currcondition,
+                                           avg_synch_A1 = avg_synch_A1,
+                                           avg_synch_A2 = avg_synch_A2,
+                                           avg_synch_A3 = avg_synch_A3,
+                                           avg_synch_A4 = avg_synch_A4,
+                                           avg_synch_A5 = avg_synch_A5,
+                                           avg_synch_A6 =avg_synch_A6,
+                                           avg_synch_A7 = avg_synch_A7,
+                                           avg_synch_A8 =avg_synch_A8,
+                                           avg_synch_A9 = avg_synch_A9,
+                                           avg_synch_A10 = avg_synch_A10,
+                                           avg_synch_A11 = avg_synch_A11,
+                                           avg_synch_A12 = avg_synch_A12,
+                                           avg_synch_A13 = avg_synch_A13,
+                                           avg_synch_A14 = avg_synch_A14,
+                                           avg_synch_A15 = avg_synch_A15,
+                                           avg_synch_A16 = avg_synch_A16,
+                                           avg_synch_A17 = avg_synch_A17,
+                                           avg_synch_A18 = avg_synch_A18,
+                                           avg_synch_A19 = avg_synch_A19,
+                                           avg_synch_A20 = avg_synch_A20,
+                                           avg_synch_A21 = avg_synch_A21,
+                                           avg_synch_A22 = avg_synch_A22,
+                                           avg_synch_A23 = avg_synch_A23,
+                                           avg_synch_A24 = avg_synch_A24,
+                                           avg_synch_A25 = avg_synch_A25,
+                                           avg_synch_A26 = avg_synch_A26,
+                                           avg_synch_A27 = avg_synch_A27,
+                                           avg_synch_A28 = avg_synch_A28,
+                                           avg_synch_A29 = avg_synch_A29,
+                                           avg_synch_A30 = avg_synch_A30, 
+                                           avg_synch_A31 = avg_synch_A31)
+    synch_avg_pairs_temp = rbind(synch_avg_pairs_temp,temp_synch_avg_results.df)
+    
+    
+  }
+}
+
+synch_avg_pairs = synch_avg_pairs_temp
+```
+
+
+### Step 2: Visualize one electrode pair (e.g. A1)
+
+```{r}
+base2 <- ggplot(synch_avg_pairs, aes(x = condition, y= avg_synch_A11, fill = as.factor(condition))) +
+  geom_bar(stat = "identity")+
+  scale_fill_brewer(palette = "Set1") +
+  theme_minimal()
+base2
+```
+
+### Step 3: Visualise all electrode pairs (Loop over channels)
+```{r}
+cols <- colnames(synch_avg_pairs)
+cols <- cols[!cols %in% c(c("avg_synch_A1", "avg_synch_A2", "avg_synch_A3", "avg_synch_A4", 
+                                           "avg_synch_A5",
+                                           "avg_synch_A6",
+                                           "avg_synch_A7",
+                                           "avg_synch_A8" ,
+                                           "avg_synch_A9" ,
+                                           "avg_synch_A10",
+                                           "avg_synch_A11",
+                                           "avg_synch_A12",
+                                           "avg_synch_A13",
+                                           "avg_synch_A14",
+                                           "avg_synch_A15",
+                                           "avg_synch_A16",
+                                           "avg_synch_A17",
+                                           'avg_synch_A18',
+                                           "avg_synch_A19",
+                                           "avg_synch_A20",
+                                           "avg_synch_A21",
+                                           'avg_synch_A22',
+                                           "avg_synch_A23",
+                                           "avg_synch_A24",
+                                           "avg_synch_A25",
+                                           "avg_synch_A26",
+                                           "avg_synch_A27", 
+                                           'avg_synch_A28', 
+                                           "avg_synch_A29", 
+                                           "avg_synch_A30", 
+                                           "avg_synch_A31"))]
+for(i in cols){
+  name <- paste(i, ".pdf", sep = "")
+  id <- which(colnames(synch_avg_pairs) == i)
+  # add a new column - this is the one accepting the "rotating" input
+  synch_avg_pairs$avg <- synch_avg_pairs[,id]
+  
+  p <- synch_avg_pairs %>% 
+    select(avg, avg_synch_A1, avg_synch_A2, avg_synch_A3, avg_synch_A4, avg_synch_A5,
+                avg_synch_A6,avg_synch_A7,avg_synch_A8, avg_synch_A9 ,avg_synch_A10,
+                avg_synch_A11,avg_synch_A12,avg_synch_A13,avg_synch_A14,avg_synch_A15,
+                avg_synch_A16,avg_synch_A17, avg_synch_A18,avg_synch_A19,avg_synch_A20,
+                avg_synch_A21,avg_synch_A22,avg_synch_A23,avg_synch_A24,avg_synch_A25,
+                avg_synch_A26,avg_synch_A27, avg_synch_A28, avg_synch_A29, avg_synch_A30, avg_synch_A31) %>%
+    gather(variable, values, avg_synch_A1:avg_synch_A31) %>% 
+    ggplot(aes(avg, values, fill = as.factor(avg))) + 
+    geom_bar(stat = "identity") + 
+    facet_wrap(. ~ variable, scales = "free_x")+
+    coord_cartesian(ylim=c(0.0, .5))+
+    scale_fill_brewer(palette="Set1")+
+    theme_minimal()+
+    labs(title = "Mean synchrony in each electrode pair per condition", 
+         x = "condition",
+         y = "mean synchrony")+
+    theme(plot.title = element_text(family = "Helvetica", face = "bold", size = (15), hjust=0.5),
+          legend.title = element_blank())
+    # geom_smooth(method = "lm", se = FALSE) + 
+    # scale_y_continuous(trans = "log2", labels = NULL, breaks = NULL) + 
+    # scale_x_continuous(i, trans = "log2", labels = NULL, breaks = NULL)
+    # 
+  pdf(name)
+  print(p)
+  
+  dev.off()
+}
+
+```
+
+
+
+
+
+
+## Overall mean synchrony between conditions and accuracy
+To get a broad idea of the data. How does the mean syncrony from all the electrodes look in the different conditions? (*too much averaging --> loosing much detail*)
+
+### Setp 1: Add a column with mean synchrony
+```{r}
+###
+```
+### Step 2: Plot mean synchrony over condition
+```{r}
+# totalmsynch_plot <- ggplot(data=synch_channels,
+#                      aes(x= condition, y= total_msynch )) +
+#                 geom_bar(stat="identity", position= position_dodge(), width= 0.9) +
+#                 # geom_text(aes(label= sum_avg), color = "white", position = position_dodge(1), size=3.5)
+#                 scale_fill_brewer(palette="Set1")+
+#                 xlab('Condition') +
+#                 ylab('Total Syncrhony')
+#                 # labs(fill='Matching Accuracy') 
+#                 # coord_cartesian(ylim=c(0.0, 1))
+#                 #geom_errorbar(aes(ymin = sum_avg - sum_sd), (ymax = sum_avg + sum_sd)) 
+# 
+# 
+# totalmsynch_plot
+```
+### Step 3: Plot mean synchrony over accuracy
+```{r}
+# totalmsynch_acc_plot <- ggplot(data=synch_channels,
+#                            aes(x= accuracy, y= total_msynch )) +
+#   geom_bar(stat="identity", position= position_dodge(), width= 0.5) +
+#   # geom_text(aes(label= sum_avg), color = "white", position = position_dodge(1), size=3.5)
+#   scale_fill_brewer(palette="Set1")+
+#   xlab('Accuracy') +
+#   ylab('Total Syncrhony')+
+# # labs(fill='Matching Accuracy') +
+#   coord_cartesian(ylim=c(0.0, 0.5))
+# #geom_errorbar(aes(ymin = sum_avg - sum_sd), (ymax = sum_avg + sum_sd)) 
+# 
+
+# totalmsynch_acc_plot
+```
+
+
+
+
+
+
+
+## Scatterplot: scored synchrony in A1 for each trial per session
+```{r}
+plot_synch_A1<- ggplot(data=synch_channels,
+                        aes(x=session, y= A1_A1)) +
+  geom_point( color="blueviolet") +
+  labs(title="A1-synchrony for each trial between subjs",
+       x="pairs", y = "synchrony value") +
+  # coord_cartesian(ylim=c(0.0, 1))+
+  # geom_hline(aes(yintercept = 0.644, linetype="Mean = .64"), 
+             # color = "red", size=0.7, show.legend = TRUE)+
+  
+  theme_minimal()
+plot_synch_A1
+
+```
+
+
+## Plot synchrony for each electrode pair based on accuracy (1)for one subject, (2)for each pair (3) for all subjects together
+### Step 1: Data preparation for one subject
+```{r}
+data2 <- as.data.frame(subset(synch_channels, session == 2, select = c(trial, accuracy, condition, A1_A1, A2_A2, A3_A3, A4_A4, A5_A5, A6_A6, A7_A7,A8_A8, A9_A9, A10_A10, A11_A11, A12_A12, A13_A13, A14_A14, A15_A15, A16_A16, A17_A17, A18_A18, A19_A19, A20_A20, A21_A21, A22_A22, A23_A23, A24_A24, A25_A25, A26_A26, A27_A27, A28_A28, A29_A29, A30_A30, A31_A31)))
+data2_mean<- ddply(data2, "accuracy", summarise,
+                    mean_A1= mean(A1_A1), 
+                    mean_A2= mean(A2_A2),
+                    mean_A3= mean(A3_A3), 
+                    mean_A4= mean(A4_A4),
+                    mean_A5 = mean(A5_A5),
+                    mean_A6 = mean(A6_A6),
+                    mean_A7 = mean(A7_A7),
+                    mean_A8 = mean(A8_A8),
+                    mean_A9 = mean(A9_A9),
+                    mean_A10 = mean(A10_A10),
+                    mean_A11 = mean(A11_A11),
+                    mean_A12 = mean(A12_A12),
+                    mean_A13 = mean(A13_A13),
+                    mean_A14 = mean(A14_A14),
+                    mean_A15 = mean(A15_A15),
+                    mean_A16 = mean(A16_A16),
+                    mean_A17 = mean(A17_A17),
+                    mean_A18 = mean(A18_A18), 
+                    mean_A19 = mean(A19_A19),
+                    mean_A20 = mean(A20_A20),
+                    mean_A21 = mean(A21_A21),
+                    mean_A22 = mean(A22_A22),
+                    mean_A23 = mean(A23_A23),
+                    mean_A24 = mean(A24_A24),
+                    mean_A25 = mean(A25_A25),
+                    mean_A26 = mean(A26_A26),
+                    mean_A27= mean(A27_A27), 
+                    mean_A28= mean(A28_A28), 
+                    mean_A29= mean(A29_A29), 
+                    mean_A30= mean(A30_A30), 
+                    mean_A31= mean(A31_A31))
+
+
+
+
+```
+### Step 2. For one subject (e.g.2), one electrode pair(mean_A1)
+```{r}
+# Plot one channel
+plot_data2A1<- ggplot(data=data2_mean,
+                     aes(x=accuracy, y= mean_A1)) +
+  geom_bar(stat = "identity") +
+  labs(title="Mean synchrony in A1 based on matching accuracy on session 2",
+       x="accuracy", y = "synchrony proportion") +
+  # coord_cartesian(ylim=c(0.0, 20))+
+  # geom_hline(aes(yintercept = 0.644, linetype="Mean = .64"), 
+  # color = "red", size=0.7, show.legend = TRUE)+
+  
+  theme_minimal()
+plot_data2A1
+```
+
+
+
+### Step 3. For subject 2, all channels  
+```{r}
+dat_2_all <- as.data.frame(subset(synch_channels, session == 2, select = c(trial, accuracy, condition, A1_A1, A2_A2, A3_A3, A4_A4, A5_A5, A6_A6, A7_A7,A8_A8, A9_A9, A10_A10, A11_A11, A12_A12, A13_A13, A14_A14, A15_A15, A16_A16, A17_A17, A18_A18, A19_A19, A20_A20, A21_A21, A22_A22, A23_A23, A24_A24, A25_A25, A26_A26, A27_A27, A28_A28, A29_A29, A30_A30, A31_A31)))
+
+data2_mean %>% tidyr::gather("id", "value", 2:32) %>% 
+  ggplot(., aes(accuracy, value))+
+  geom_bar(stat = "identity")+
+  # geom_smooth(method = "lm", se=FALSE, color="black")+
+  facet_wrap(~id)+
+  ggtitle("Synchrony based on matching accuracy subj2") 
+  
+```
+### Step 4: Loop over subjects
+```{r}
+for (isession in 1:length(unique(clean_synch_channels$session)))
+{
+  currsession = unique(clean_synch_channels$session)[isession]
+  
+  currdata = as.data.frame(subset(clean_synch_channels, session == currsession, select = c(trial, condition, accuracy, A1_A1, A2_A2, A3_A3, A4_A4,A5_A5, A6_A6, A7_A7,A8_A8, A9_A9, A10_A10, A11_A11, A12_A12, A13_A13, A14_A14, A15_A15, A16_A16, A17_A17, A18_A18, A19_A19, A20_A20, A21_A21, A22_A22, A23_A23, A24_A24, A25_A25, A26_A26, A27_A27, A28_A28, A29_A29, A30_A30, A31_A31)))
+
+    if (nrow(currdata)==0)
+    {
+      next 
+      
+    } else {
+      # calculate mean synchrony per channel
+      currdata_mean<- ddply(currdata, "accuracy", summarise,
+                          mean_acc_A1= mean(A1_A1), 
+                          mean_acc_A2= mean(A2_A2),
+                          mean_acc_A3= mean(A3_A3), 
+                          mean_acc_A4= mean(A4_A4), 
+                          mean_acc_A5 = mean(A5_A5),
+                          mean_acc_A6 = mean(A6_A6),
+                          mean_acc_A7 = mean(A7_A7),
+                          mean_acc_A8 = mean(A8_A8),
+                          mean_acc_A9 = mean(A9_A9),
+                          mean_acc_A10 = mean(A10_A10),
+                          mean_acc_A11 = mean(A11_A11),
+                          mean_acc_A12 = mean(A12_A12),
+                          mean_acc_A13 = mean(A13_A13),
+                          mean_acc_A14 = mean(A14_A14),
+                          mean_acc_A15 = mean(A15_A15),
+                          mean_acc_A16 = mean(A16_A16),
+                          mean_acc_A17 = mean(A17_A17),
+                          mean_acc_A18 = mean(A18_A18), 
+                          mean_acc_A19 = mean(A19_A19),
+                          mean_acc_A20 = mean(A20_A20),
+                          mean_acc_A21 = mean(A21_A21),
+                          mean_acc_A22 = mean(A22_A22),
+                          mean_acc_A23 = mean(A23_A23),
+                          mean_acc_A24 = mean(A24_A24),
+                          mean_acc_A25 = mean(A25_A25),
+                          mean_acc_A26 = mean(A26_A26),
+                          mean_acc_A27= mean(A27_A27), 
+                          mean_acc_A28= mean(A28_A28), 
+                          mean_acc_A29= mean(A29_A29), 
+                          mean_acc_A30= mean(A30_A30), 
+                          mean_acc_A31= mean(A31_A31))
+      
+      
+      
+      synch_acc_plot <- currdata_mean %>% tidyr::gather("id", "value", 2:32) %>% 
+                          ggplot(., aes(accuracy, value), inherit.aes = FALSE)+
+                          geom_bar(stat = "identity")+
+                          # geom_smooth(method = "lm", se=FALSE, color="black")+
+                          facet_wrap(~id)+
+                          xlab('Matching Accuracy') +
+                          ylab('Mean Synchrony') +
+                          scale_fill_manual("legend", values=c("0" = "darkblue", "1" = "red"))+
+                          ggtitle(paste0('Synchrony based on matching accuracy \n in pair', as.character(currsession)))+
+                          theme(plot.title = element_text(size=10, face = "bold", hjust = 0.5),
+                            axis.text=element_text(size=4),
+                                axis.title=element_text(size=5,face="bold"))+
+                          expand_limits(x = 0)
+                        
+                      
+      dir.create(file.path("C:/Users/katec/Desktop/Major_Project/5. Analysis/Behavioural", "plots"), showWarnings = FALSE)
+      setwd(file.path("C:/Users/katec/Desktop/Major_Project/5. Analysis/Behavioural", "plots")) # output to "plots" folder within output directory
+      
+      plot.filename = paste0('synch_acc on sess',as.character(currsession),'.png')
+      
+      ggsave(plot.filename, plot= synch_acc_plot)
+      cat("saving", plot.filename, "to", file.path("C:/Users/katec/Desktop/Major_Project/5. Analysis/Behavioural", "plots"), "\n\n")
+      
+      
+    }
+  }
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Linear Mixed Models on Mean_synch:
+Mean synchrony (DV) in each electrode pair as a function of stimulus type & cognitive load.
+
+### step 1: Data preperation
+a. Take the synchrony_mean_pairs and set them as data.table to have a faster processing
+
+b. Specify explicitly the condition: low/high and colour/shape
+
+```{r}
+synchrony_m_datatable <- as.data.table(synchrony_mean_pairs) 
+
+# load_condition: 1 = "low", 2 = "high"
+synchrony_m_datatable [, load_condition := as.factor("")] [condition == 101 | condition == 102, load_condition := as.factor("low") ] [condition == 103 | condition == 104, load_condition := as.factor("high")]
+
+# stim_type: 1 = "color", 2 = "shape"
+synchrony_m_datatable [, stim_type := as.factor("")] [condition == 101 | condition == 103, stim_type := as.factor("color") ] [condition == 102 | condition == 104, stim_type := as.factor("shape")]
+
+# remove condition column
+synchrony_m_datatable[, condition := NULL]
+
+
+# rearrange columns
+setcolorder(synchrony_m_datatable, c("session", "load_condition","stim_type","mean_synch_A1", "mean_synch_A2", "mean_synch_A3", "mean_synch_A4","mean_synch_A5","mean_synch_A6","mean_synch_A7", "mean_synch_A8",
+ "mean_synch_A9", "mean_synch_A10", "mean_synch_A11","mean_synch_A12", "mean_synch_A13", "mean_synch_A14",
+ "mean_synch_A15", "mean_synch_A16", "mean_synch_A17", "mean_synch_A18","mean_synch_A19", "mean_synch_A20",
+ "mean_synch_A21", "mean_synch_A22", "mean_synch_A23", "mean_synch_A24", "mean_synch_A25","mean_synch_A26",
+ "mean_synch_A27", "mean_synch_A28", "mean_synch_A29", "mean_synch_A30", "mean_synch_A31"))
+
+setkey(synchrony_m_datatable, session, stim_type, load_condition)
+```
+
+### step 2: Create LMM for one pair electrode (A1) on mean synch
+```{r}
+#Null model - intercept only model
+nlllmdlsA1<- lmer( mean_synch_A1 ~ 1 + (1|session) , data = synchrony_m_datatable, REML = FALSE)
+nlllmdlsA7<- lmer( mean_synch_A7 ~ 1 + (1|session) , data = synchrony_m_datatable, REML = FALSE) #singularity
+
+
+# Reduced model
+reduced_smodel<-lmer(mean_synch_A1 ~ stim_type + (1|session) , data = synchrony_m_datatable, REML = FALSE)
+summary (reduced_smodel) 
+
+# Comparison 0
+anova(nlllmdlsA1, reduced_smodel) #not sing
+
+#fullmodel
+full_smodel <- lmer(mean_synch_A31 ~ stim_type + load_condition + (1|session) , data = synchrony_m_datatable, REML = FALSE)
+summary (full_smodel)
+
+ #comparison A
+anova(reduced_smodel, full_smodel) # not sign
+# comparison B
+anova(nlllmdlsA1, full_smodel) # not sign
+
+```
+Channels A7, A8, A12, A16, A26, A31 display a warning of singularity, "boundary (singular) fit": **Why?**
+ALREADY HAPPENS AT THE NULL MODEL
+
+---
+**NOTE**
+
+Singular fit often indicates that the model is overfitted (i.e., the random effects structure is too complex to be supported by the data, which naturally leads to the advice to remove the most complex part of the random effects structure (usually random slopes). However, our data doesn't have a complex structure. The most probable cause of this is the sample size. Synchrony data -at this stage- include only half of the data we have. Therefore, it might be that there isn't enough power and some channels are too noisy. 
+
+Answer/suggestion by [Isabella Ghement](https://stats.stackexchange.com/questions/378939/dealing-with-singular-fit-in-mixed-models)
+The mixed effects model does not fit unrelated, separate linear regression models for each subject - it fits "related" models whose intercepts deviate randomly about a typical intercept, such that the random deviations from the typical intercept follow a Normal distribution with mean zero and some unknown standard deviation. 
+Probably the LMM is struggling with small amount of observations. Try maybe standardizing your X variable?
+
+
+
+---
+#### Exploring why there is singular fit : [Bolker et al., 2021](https://bbolker.github.io/mixedmodels-misc/glmmFAQ.html#singular-models-random-effect-variances-estimated-as-zero-or-correlations-estimated-as---1) 
+```{r}
+# 1. any NA?
+which(!complete.cases(synchrony_m_datatable$mean_synch_A31)) # No 
+
+# 2. less number of observations? 
+length(synchrony_m_datatable$mean_synch_A1) == length(synchrony_m_datatable$mean_synch_A31) #No
+
+# 3. Test the loop with not this one. Might happen because it is the last: NO
+
+# 4. Plot intercepts:
+# gives the conditional modes = the difference between (population-level) average predicted response 
+# for a given set of fixed-effect values (treatment) and the response predicted for a particular individual.
+
+randomsA1<-ranef(nlllmdlsA1, condVar = TRUE) 
+randomsA7<-ranef(nlllmdlsA7, condVar = TRUE) 
+
+qqmath(randomsA1)
+qqmath(randomsA7)
+
+# 5. Plot the actual data in matlab: Nothing obvious
+
+
+# 6. use KERNEL DENSITY ESTIMATION:
+#a non-parametric way to estimate the probability density function of a random variable.
+library("kdensity")
+
+kdeA1 = kdensity(synchrony_m_datatable$mean_synch_A1, kernel = "gaussian", start = "uniform")
+plot(kdeA1, main = "MEan synchrony A1")
+rug(synchrony_m_datatable$mean_synch_A1)
+
+kdeA31 = kdensity(synchrony_m_datatable$mean_synch_A31, kernel = "gaussian", start = "uniform")
+plot(kdeA31, main = "MEan synchrony A31") 
+rug(synchrony_m_datatable$mean_synch_A31)
+
+kdeA2 = kdensity(synchrony_m_datatable$mean_synch_A2, kernel = "gaussian", start = "uniform")
+plot(kdeA2, main = "MEan synchrony A2")
+rug(synchrony_m_datatable$mean_synch_A2)
+
+kdeA7 = kdensity(synchrony_m_datatable$mean_synch_A7, kernel = "gaussian", start = "uniform")
+plot(kdeA7, main = "MEan synchrony A7") 
+rug(synchrony_m_datatable$mean_synch_A7)
+
+
+ 
+ 
+# denschan = kdensity(clean_synch_channels$A31_A31, kernel = "gaussian", start = "uniform")
+# plot(denschan, main = "A31_A31")
+# rug(clean_synch_channels$A31_A31) #Creates a set of tick marks at the base of the plot.
+
+
+# denschanA1 = kdensity(clean_synch_channels$A1_A1, kernel = "gaussian", start = "uniform")
+# plot(denschanA1, main = "A1_A1")
+# rug(clean_synch_channels$A1_A1)
+
+# Standardization 
+
+# 6. Bayesian Approach to LMM: See at the end of script
+```
+
+
+#### Why get zero variance of a random effect? *(qqmath)* 
+What we notice from this is that the predicted values from the models in the singular channels are all exactly 0. 
+
+"Although there is "obviously" variation in subject performance, the extent of this subject variation can be (virtually-)fully explained by just the residual variance term alone. There is not enough additional subject-level variation to warrant adding an additional subject-level random effect to explain all the observed variation." by [Jake Westfall](https://stats.stackexchange.com/questions/115090/why-do-i-get-zero-variance-of-a-random-effect-in-my-mixed-model-despite-some-va)
+
+Therefore, we can assume that most possibly explanation it's a matter of small sample size. 
+
+For more info [here](https://bbolker.github.io/mixedmodels-misc/glmmFAQ.html#singular-models-random-effect-variances-estimated-as-zero-or-correlations-estimated-as---1)
+
+
+
+## RM_Anova
+As seen from the models above, lm models might be too sensitive and thus producing this singularity issue. Therefore, conducting a [rm-anova](https://www.r-bloggers.com/2015/08/two-way-anova-with-repeated-measures/), even though is not the most flexible and thus preferable way to analyse this type of data, it might be a bit more stable. This will give us a more broad statistical overview of the data. Then, we  optimize with e.g. bayesian models. 
+
+### Libraries to-be-used
+```{r}
+# library(tidyverse)
+library(ggpubr)
+library(rstatix)
+library(lmerTest)
+```
+
+
+The data-to-be-used is the mean synchrony value[iChannel] for each pair in each condition.
+To conduct however a RM-Anova, certain [*assumptions*](https://www.datanovia.com/en/lessons/mixed-anova-in-r/) must be first met. 
+- Independency (btw subjs)
+- Normality --> **All the points fall approximately along the reference line, for each cell. So we can assume normality of the data.**
+- Homoscedasticity
+- Sphericity --> sphericity assumption is violated. In this case, adjustments can be made by Greenhouse-Geisser and Huyn-Feldt.
+```{r}
+
+#1.1. For one channel
+synchrony_m_df<- as.data.frame(synchrony_m_datatable)  
+
+qqplot(synchrony_m_df$mean_synch_A1, pch = 1, frame = FALSE)
+qqline(synchrony_m_df$mean_synch_A1, col = "steelblue", lwd = 2)
+
+library(ggpubr)
+ggqqplot(synchrony_m_df, "mean_synch_A1")
+  
+ # 1.2 For all channels
+chan_names <- sprintf("mean_synch_A%d",seq(1:31))
+
+# 1.2.A. in a loop ; Error
+cols <- c("mean_synch_A1",  "mean_synch_A2",  "mean_synch_A3" , "mean_synch_A4", "mean_synch_A6", "mean_synch_A7", "mean_synch_A8" , "mean_synch_A9",  "mean_synch_A10", "mean_synch_A11", "mean_synch_A12", "mean_synch_A13", "mean_synch_A14", "mean_synch_A15", "mean_synch_A16", "mean_synch_A17", "mean_synch_A18", "mean_synch_A19", "mean_synch_A20", "mean_synch_A21", "mean_synch_A22", "mean_synch_A23", "mean_synch_A24", "mean_synch_A25", "mean_synch_A26", "mean_synch_A27", "mean_synch_A28", "mean_synch_A29", "mean_synch_A30","mean_synch_A31")
+          
+for(i in cols){
+  name <- paste(i, ".pdf", sep = "")
+  id <- which(colnames(synchrony_m_df) == i)
+  # sub_dat <- synchrony_m_df[,id]
+  # synchrony_m_df$chan_plot <- synchrony_m_df[,id]
+  # qqnorm(synchrony_m_df[,id], pch = 1, frame = FALSE, main = id, plot.it=TRUE)
+  # qqline(synchrony_m_df[,id], col = "steelblue", lwd = 2)
+  ggqqplot(synchrony_m_df,synchrony_m_df[,id])
+  pdf(name)
+  dev.off()
+}
+
+# 1.2.B 
+
+ggqqplot(synchrony_m_df, "mean_synch_A1")
+ggqqplot(synchrony_m_df, "mean_synch_A2")
+ggqqplot(synchrony_m_df, "mean_synch_A3")
+ggqqplot(synchrony_m_df, "mean_synch_A4")
+# ggqqplot(synchrony_m_df, "mean_synch_A5")
+ggqqplot(synchrony_m_df, "mean_synch_A6")
+ggqqplot(synchrony_m_df, "mean_synch_A7")
+ggqqplot(synchrony_m_df, "mean_synch_A8")
+ggqqplot(synchrony_m_df, "mean_synch_A9")
+ggqqplot(synchrony_m_df, "mean_synch_A10")
+ggqqplot(synchrony_m_df, "mean_synch_A11")
+ggqqplot(synchrony_m_df, "mean_synch_A12")
+ggqqplot(synchrony_m_df, "mean_synch_A13")
+ggqqplot(synchrony_m_df, "mean_synch_A14")
+ggqqplot(synchrony_m_df, "mean_synch_A15")
+ggqqplot(synchrony_m_df, "mean_synch_A16")
+ggqqplot(synchrony_m_df, "mean_synch_A17")
+ggqqplot(synchrony_m_df, "mean_synch_A18")
+ggqqplot(synchrony_m_df, "mean_synch_A19")
+ggqqplot(synchrony_m_df, "mean_synch_A20")
+ggqqplot(synchrony_m_df, "mean_synch_A21")
+ggqqplot(synchrony_m_df, "mean_synch_A22")
+ggqqplot(synchrony_m_df, "mean_synch_A23")
+ggqqplot(synchrony_m_df, "mean_synch_A24")
+ggqqplot(synchrony_m_df, "mean_synch_A25")
+ggqqplot(synchrony_m_df, "mean_synch_A26")
+ggqqplot(synchrony_m_df, "mean_synch_A27")
+ggqqplot(synchrony_m_df, "mean_synch_A28")
+ggqqplot(synchrony_m_df, "mean_synch_A29")
+ggqqplot(synchrony_m_df, "mean_synch_A30")
+ggqqplot(synchrony_m_df, "mean_synch_A31")
+
+ggqqplot(clean_synch_channels, "A1_A1", ggtheme = theme_bw()) +
+  facet_grid(condition)
+
+normality<- synchrony_m_datatable %>%
+              shapiro_test(mean_synch_A1)
+
+
+## 2.Homoscedasticity
+
+## 3. Sphericity
+
+# First, define a variable x with columns containing the values for each condition,
+load<- cbind(synchrony_m_datatable$load_condition[synchrony_m_datatable$load_condition == "high"],
+            synchrony_m_datatable$load_condition[synchrony_m_datatable$load_condition == "low"])
+
+# Make an mlm object
+mlm <- lm(load ~ 1)
+
+
+# Mauchly's test
+mauchly.test(mlm, x = ~ 1)
+```
+
+
+
+Q: Does the stimulus type and load condition modulate the IBS?
+```{r}
+# Step 1: One Channel
+
+#how does synchrony changes as a function of load condition & stimulus
+rm_synchA1.aov <- with(synchrony_m_datatable,
+                   aov(mean_synch_A1 ~ stim_type * load_condition  +
+                         Error(session / (load_condition * stim_type)))) #natural variation from pair to pair 
+#controlling for the between-pairs variation over all of our within-pair variables.
+                         
+summary(rm_synchA1.aov)
+
+
+```
+There is no F- or p-values reported. Why? Possible explanation by [TWL](https://stackoverflow.com/questions/20133431/my-anova-doesnt-produce-a-p-value-in-r) is that the anova cannot compute the variance. Suggestion " **Anova requires replicates to assess the variance and compute the statistic. Discard the mean values, and use the original replicated data as an input to anova**".
+
+```{r}
+rm_A1.aov <- with(synchrony_channels.df,
+                   aov(A1_A1 ~ stim_type * load_condition  +
+                         Error(session / (load_condition * stim_type))))
+summary(rm_A1.aov)
+
+```
+Again we do not have any p-values
+
+What if I add time?
+```{r}
+rmt_A1.aov <- with(synchrony_channels.df,
+                   aov(A1_A1 ~ trial * stim_type * load_condition  +
+                         Error(session / (load_condition * stim_type))))
+summary(rmt_A1.aov)
+
+```
+Again nothing. 
+
+Alternative to run RM-Anovas
+```{r}
+#install.packages("ez")
+library(ez)
+rm2_synchA1.aov = ezANOVA(
+    data = synchrony_channels.df
+    , dv = A1_A1
+    , wid = session
+    , within = trial
+    , between = .(stim_type, load_condition)
+)
+
+#Show the ANOVA and assumption tests.
+print(rm2_synchA1.aov)
+
+ezDesign(synchrony_channels.df, x= trial, y = session, row = load_condition, col = stim_type)
+
+#Data is unbalanced (unequal N per group). We cannot perform RM-anova
+```
+
+
+
+
+
+## Step 3: Create a loop for LMM to run for each mean_synch_channel
+Sample code by [Klodian Dhana](https://www.r-bloggers.com/2017/02/how-to-create-a-loop-to-run-multiple-regression-models/)
+
+```{r, eval = FALSE}
+#DVs
+out_start=4
+out_end= 12
+out_nvar=out_end-out_start+1
+
+out_variable1=rep(NA, out_nvar)
+out_beta1=rep(NA, out_nvar)
+out_se1 = rep(NA, out_nvar)
+out_pvalue1=rep(NA, out_nvar)
+
+out_variable2=rep(NA, out_nvar)
+out_beta2=rep(NA, out_nvar)
+out_se2 = rep(NA, out_nvar)
+out_pvalue2=rep(NA, out_nvar)
+
+number1=1
+number2=1
+
+for (i in out_start:out_end){
+  outcome1 = colnames(synchrony_m_datatable)[i]
+  outcome2 = colnames(synchrony_m_datatable)[i]
+  model1 <- lmer(get(outcome1) ~ stim_type + (1|session),
+                  na.action = na.exclude,
+                  data=synchrony_m_datatable,
+                  REML = FALSE)
+  model2 <- lmer(get(outcome2) ~ stim_type + load_condition + (1|session),
+                 na.action = na.exclude,
+                 data=synchrony_m_datatable,
+                 REML = FALSE)  
+  Vcov1 <- vcov(model1, useScale = FALSE) #returns the variance-covariance matrix of the main parameters of the fitted model
+  Vcov2 <- vcov(model2, useScale = FALSE)
+  
+  beta1 <- fixef(model1) #extracts the fixed-effects estimates
+  beta2 <- fixef(model2)
+  
+  se1 <- sqrt(diag(Vcov1))#diag():replace the diagonal of a matrix with the (sqrt)
+  se2 <- sqrt(diag(Vcov2))
+  
+  zval1 <- beta1 / se1  #standardized z values 
+  zval2 <- beta2 / se2
+  
+  pval1 <- 2 * pnorm(abs(zval1), lower.tail = FALSE) #pnorm(value, mean, sd): calculates the CDF-> F(x) = P(X <= x)
+  pval2 <- 2 * pnorm(abs(zval2), lower.tail = FALSE)
+  
+  out_beta1[number1] = as.numeric(beta1[2])
+  out_beta2[number2] = as.numeric(beta2[2])
+  
+  out_se1[number1] = as.numeric(se1[2])
+  out_se2[number2] = as.numeric(se2[2])
+  
+  out_pvalue1[number1] = as.numeric(pval1[2])
+  out_pvalue2[number2] = as.numeric(pval2[2])
+  
+  out_variable1[number1] = outcome1
+  out_variable2[number2] = outcome2
+  
+  number1 = number1 + 1
+  number2 = number2 + 1
+}
+
+#create df with results
+outcome1 = data.frame(out_variable1, out_beta1, out_se1, out_pvalue1)
+outcome2 = data.frame(out_variable2, out_beta2, out_se2, out_pvalue2)
+
+```
+
+Sample code by [Witzan](https://stackoverflow.com/questions/36889516/making-a-loop-for-lme-in-r)
+
+```{r}
+channels <-as.data.frame(synchrony_m_datatable[,c(4:34)])
+dim(channels) #get the dimensions of matrix
+```
+
+##### Null to Reduced
+
+```{r}
+comparisons_NR_output <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  #null model with stim_type
+  null_smodel <- lmer(variable ~ 1 + (1|session), REML = FALSE, data = synchrony_m_datatable)
+  sum_null_smodel <- summary(null_smodel)
+  
+  #reduced model with 
+  reduced_smodel <-lmer(variable ~ stim_type + (1|session), REML = FALSE, data = synchrony_m_datatable)
+  sum_reduced_smodel <- summary(reduced_smodel)
+  
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(null_smodel, reduced_smodel)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  comparisons_NR_output <- rbind(comparisons_NR_output, comparison.tmp)
+  
+}
+
+view(comparisons_NR_output)
+```
+
+
+Significant Channels:
+- A3 
+- A6
+- A25
+- A28
+
+
+##### Reduced to Full
+```{r}
+
+comparisons_RF_output <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  #reduced model with stim_type
+  reduced_smodel <- lmer(variable ~ stim_type + (1|session), REML = FALSE, data = synchrony_m_datatable)
+  sum_rdc_smodel <- summary(reduced_smodel)
+  
+  #full model with 
+  full_smodel <-lmer(variable ~ stim_type +  load_condition + (1|session), REML = FALSE, data = synchrony_m_datatable)
+  sum_full_smodel <- summary(full_smodel)
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(reduced_smodel, full_smodel)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  comparisons_RF_output <- rbind(comparisons_RF_output, comparison.tmp)
+  
+}
+
+comparisons_RF_output
+```
+
+Significant Channels:
+- A12
+- A23
+
+
+
+
+
+
+
+
+
+## Bayesian Approach to LMMS: (dealing with singularity)
+
+If you want to fit the model with the maximal random effects structure, and lme4 obtains a singular fit, then fitting the same model in a Bayesian framework might very well inform you why lme4 had problems.
+- Inspect trace plots 
+- how well the various parameter estimates converge?
+*There situations, though, where a Bayesian model does not converge well, unless informative priors are used – which may or may not be OK.*
+
+Bayesian approaches allow the user to specify a informative prior that avoids singularity.
+- The `r blme ` package (Chung et al. 2013) provides a wrapper for the lme4 machinery that adds a particular form of weak prior to get an approximate a Bayesian maximum a posteriori estimate that avoids singularity. [BLEMR](https://rdrr.io/cran/blme/man/blmer.html)
+- The `r MCMCglmm` package allows for priors on the variance-covariance matrix
+- The `r rstanarm` and `r brms` packages provide wrappers for the Stan Hamiltonian MCMC engine that fit GLMMs via lme4 syntax, again allowing a variety of priors to be set.
+
+
+
+```{r}
+
+# install.packages("blme")
+library(blme)
+fullBLM <- blme::blmer(mean_synch_A31 ~ stim_type + load_condition + (1 | session), data = synchrony_m_datatable,
+      resid.prior = point(1.0), cov.prior = NULL, REML = FALSE)
+
+
+
+
+
+```
+
+LMBF
+
+```{r}
+# lmBF: Function to compute Bayes factors for specific linear models
+#install.packages("BayesFactor")
+library(BayesFactor)
+
+
+# make sure to specify random intercept as factor
+synchrony_m_datatable[, session:=as.factor(session)]
+
+## Bayes factor of main effects against reduced
+fulldBF_model <- lmBF(mean_synch_A31 ~ stim_type + load_condition + session, data = synchrony_m_datatable, whichRandom = "session")
+
+## Bayes factor of main effects against null
+reducedBF_model <- lmBF(mean_synch_A31 ~ stim_type + session, data = synchrony_m_datatable, whichRandom = "session")
+
+
+
+## Compare the main-effects only model to the full model
+reducedBF_model/fulldBF_model
+
+
+
+
+## sample from the posterior of the full model
+# samples <- lmBF(mean_synch_A1 ~ stim_type + load_condition + session, data = synchrony_m_datatable, whichRandom = "session", posterior = TRUE, iterations = 1000)
+# summary(samples)
+chains = posterior(reducedBF_model, iterations = 1000)
+summary(chains)
+
+samples2 = recompute(samples, iterations = 10000)
+plot(samples2[,1:2])
+
+
+
+# anova BF
+bf = anovaBF(mean_synch_A31 ~ stim_type + load_condition + session, 
+             data = synchrony_m_datatable, whichRandom = "session")
+
+bf
+
+plot(bf)
+```
+
+
+
+
+
+
+# Linear Mixed Models on Channel_Channel:
+**Incorporating time**
+Working with *Syncrhony_Channels.dt*
+
+## Raw Data Loop
+
+```{r}
+channels <-as.data.frame(synchrony_channels.dt[,c(6:36)])
+dim(channels) #get the dimensions of matrix
+
+# Null to Reduced
+rawdt_comparisons_NR <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  #null model with stim_type
+  null_model <- lmer(variable ~ 1 + (1|session), REML = FALSE, data = synchrony_channels.dt)
+  sum_null_model <- summary(null_model)
+  
+  #reduced model with 
+  reduced_model <-lmer(variable ~ stim_type + (1|session), REML = FALSE, data = synchrony_channels.dt)
+  sum_reduced_model <- summary(reduced_model)
+  
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(null_model, reduced_model)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  rawdt_comparisons_NR <- rbind(rawdt_comparisons_NR, comparison.tmp)
+  
+}
+
+print(rawdt_comparisons_NR)
+
+```
+
+Significant channels:
+- A3
+- A6
+- A28
+- A31
+
+```{r}
+#Reduced to Full
+rawdt_comparisons_RF <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  
+  #reduced model with 
+  reduced_model <-lmer(variable ~ stim_type + (1|session), REML = FALSE, data = synchrony_channels.dt)
+  sum_reduced_model <- summary(reduced_model)
+  
+  #reduced model with 
+  full_model <-lmer(variable ~ stim_type + load_condition + (1|session), REML = FALSE, data = synchrony_channels.dt)
+  sum_reduced_model <- summary(full_model)
+  
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(reduced_model, full_model)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  rawdt_comparisons_RF <- rbind(rawdt_comparisons_RF, comparison.tmp)
+  
+}
+view(rawdt_comparisons_RF)
+
+
+```
+
+Significant channels:
+- A12 = P3 (lefto-parietal)
+
+
+```{r}
+rawdt_comparisons_time <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  #null model with stim_type
+  null_model <- lmer(variable ~ 1 + (1|session), REML = FALSE, data = synchrony_channels.dt)
+  sum_null_model <- summary(null_model)
+  
+  #reduced model with 
+  reduced_model <-lmer(variable ~ trial + (1|session), REML = FALSE, data = synchrony_channels.dt)
+  sum_reduced_model <- summary(reduced_model)
+  
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(null_model, reduced_model)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  rawdt_comparisons_time <- rbind(rawdt_comparisons_time, comparison.tmp)
+  
+}
+
+view(rawdt_comparisons_time)
+```
+
+
+## Plot 
+```{r}
+# Plot raw_data as a function of time
+
+load_plot <- ggplot(synchrony_channels.dt) + 
+              geom_smooth(aes(x = trial, y = A12_A12, colour= load_condition))+
+              geom_vline(aes(xintercept = 10, linetype = "dashed"))+
+              scale_color_manual(values=c("low" = "darkslateblue", "high" = "tomato3"))+              
+   labs(x = "Time (trials)", y = "Synchrony Values", 
+                   title = "Synchrony on A12 by cognitive load over time") + 
+              # scale_linetype_manual(name= "Block Change", values = 9) +
+              expand_limits(y=c(0, 1))+
+              theme_minimal()
+load_plot
+
+
+
+```
+
+```{r}
+stim_type_plot<- ggplot(synchrony_channels.dt) + 
+                  geom_smooth(aes(x = trial, y = A12_A12, colour= stim_type))+
+                  geom_vline(aes(xintercept = 10, linetype = "dashed"))+
+                  scale_color_manual(values=c("color" = "darkslateblue", "shape" = "tomato3"))+
+                  # scale_linetype_manual(name= "Block Change", values = 9) +
+                  labs(x = "Time (trials)", y = "Synchrony Values", 
+                   title = "Synchrony on A12 by cognitive load over time") +
+                  theme_minimal()+
+                  expand_limits(y=c(0, 1))
+
+stim_type_plot
+```
+
+```{r}
+# Plot binned_data + load condition
+cond_plot <- ggplot(synchrony_channels.dt) + 
+              geom_smooth(aes(x = trial, y = A12_A12, colour= load_condition))+
+              geom_vline(aes(xintercept = 10, linetype = "dashed"))+
+              scale_color_manual(values=c("low" = "darkslateblue", "high" = "tomato3"))+              
+              labs(x = "Time (trials)", y = "Synchrony Values", 
+                   title = "Synchrony on A12 by cognitive load & stimulus type over time") + 
+              expand_limits(y=c(0, 1))+
+              theme_minimal()+
+              facet_grid(~ stim_type)
+cond_plot
+```
+
+Plotting channels in each trial by trial is not so informative. Therefore, we will split the data into bins, as in the behavioural, and see how activity evolves over 10 bins interval. 
+
+
+# Binned data
+
+## Bin Data preparation
+
+Note: bin should be numeric, not factor!
+
+```{r}
+# # define bin width
+# bin_width = 10
+# 
+# 
+# # cut the data
+# bin_data <-synchrony_channels.dt[,`:=`(bin = cut(trial, breaks = seq(1, nrow(synchrony_channels.dt), by=bin_width), right=FALSE))]
+# 
+# # bin should be numeric
+# bin_data[,bin:= as.numeric(bin)]
+# 
+# 
+# # create the datatable with the mean synchrony for each session in each bin.
+# synch_mean_bin_temp = data.frame()
+# 
+# for (isession in 1:length(unique(bin_data$session)))
+#   {
+#     currsession = unique(bin_data$session)[isession]
+#     
+#     for (icondition in 1:length(unique(bin_data$condition)))
+#     {
+#       currcondition = unique(bin_data$condition)[icondition]
+#       
+#       for (ibin in 1:length(unique(bin_data$bin)))
+#       {
+#         currbin = unique(synchrony_channels.dt$bin)[ibin]
+#         currdata <- bin_data[session==currsession & bin==currbin & condition==currcondition]
+#         # currdata = subset(synchrony_channels.dt, session==currsession & load==currload & stim==currstim & bin==currbin)
+#         
+#         if (nrow(currdata)==0)
+#         {
+#           next
+#         } else {
+#           
+#           # calculate mean synchrony per channel
+#           mean_acc = mean(currdata$accuracy)
+#           mean_bin_synchA1 = mean(currdata$A1_A1, na.rm=TRUE)
+#           mean_bin_synchA2 = mean(currdata$A2_A2,na.rm=TRUE)
+#           mean_bin_synchA3 = mean(currdata$A3_A3, na.rm=TRUE)
+#           mean_bin_synchA4 = mean(currdata$A4_A4, na.rm=TRUE)
+#           mean_bin_synchA5 = mean(currdata$A5_A5, na.rm=TRUE)
+#           mean_bin_synchA6 = mean(currdata$A6_A6, na.rm=TRUE)
+#           mean_bin_synchA7 = mean(currdata$A7_A7, na.rm=TRUE)
+#           mean_bin_synchA8 = mean(currdata$A8_A8, na.rm=TRUE)
+#           mean_bin_synchA9 = mean(currdata$A9_A9, na.rm=TRUE)
+#           mean_bin_synchA10 = mean(currdata$A10_A10, na.rm=TRUE)
+#           mean_bin_synchA11 = mean(currdata$A11_A11, na.rm=TRUE)
+#           mean_bin_synchA12 = mean(currdata$A12_A12, na.rm=TRUE)
+#           mean_bin_synchA13 = mean(currdata$A13_A13, na.rm=TRUE)
+#           mean_bin_synchA14 = mean(currdata$A14_A14, na.rm=TRUE)
+#           mean_bin_synchA15 = mean(currdata$A15_A15, na.rm=TRUE)
+#           mean_bin_synchA16 = mean(currdata$A16_A16, na.rm=TRUE)
+#           mean_bin_synchA17 = mean(currdata$A17_A17, na.rm=TRUE)
+#           mean_bin_synchA18 = mean(currdata$A18_A18, na.rm=TRUE)
+#           mean_bin_synchA19 = mean(currdata$A19_A19, na.rm=TRUE)
+#           mean_bin_synchA20 = mean(currdata$A20_A20, na.rm=TRUE)
+#           mean_bin_synchA21 = mean(currdata$A21_A21, na.rm=TRUE)
+#           mean_bin_synchA22 = mean(currdata$A22_A22, na.rm=TRUE)
+#           mean_bin_synchA23 = mean(currdata$A23_A23, na.rm=TRUE)
+#           mean_bin_synchA24 = mean(currdata$A24_A24, na.rm=TRUE)
+#           mean_bin_synchA25 = mean(currdata$A25_A25, na.rm=TRUE)
+#           mean_bin_synchA26 = mean(currdata$A26_A26, na.rm=TRUE)
+#           mean_bin_synchA27 = mean(currdata$A27_A27, na.rm=TRUE)
+#           mean_bin_synchA28 = mean(currdata$A28_A28,na.rm=TRUE)
+#           mean_bin_synchA29 = mean(currdata$A29_A29, na.rm=TRUE)
+#           mean_bin_synchA30 = mean(currdata$A30_A30,na.rm=TRUE)
+#           mean_bin_synchA31 = mean(currdata$A31_A31,na.rm=TRUE)
+#           
+#           temp_synch_bins.df = data.frame(session=currsession,
+#                                        condition = currcondition, 
+#                                        bin = currbin,
+#                                        mean_acc = mean_acc,
+#                                        mean_bin_synchA1 = mean_bin_synchA1,
+#                                        mean_bin_synchA2 = mean_bin_synchA2,
+#                                        mean_bin_synchA3 = mean_bin_synchA3,
+#                                        mean_bin_synchA4 = mean_bin_synchA4,
+#                                        mean_bin_synchA5 = mean_bin_synchA5,
+#                                        mean_bin_synchA6 = mean_bin_synchA6,
+#                                        mean_bin_synchA7 = mean_bin_synchA7,
+#                                        mean_bin_synchA8 = mean_bin_synchA8,
+#                                        mean_bin_synchA9 = mean_bin_synchA9,
+#                                        mean_bin_synchA10 = mean_bin_synchA10,
+#                                        mean_bin_synchA11 = mean_bin_synchA11,
+#                                        mean_bin_synchA12 = mean_bin_synchA12,
+#                                        mean_bin_synchA13 = mean_bin_synchA13,
+#                                        mean_bin_synchA14 = mean_bin_synchA14,
+#                                        mean_bin_synchA15 = mean_bin_synchA15,
+#                                        mean_bin_synchA16 = mean_bin_synchA16,
+#                                        mean_bin_synchA17 = mean_bin_synchA17,
+#                                        mean_bin_synchA18 = mean_bin_synchA18,
+#                                        mean_bin_synchA19 = mean_bin_synchA19,
+#                                        mean_bin_synchA20 = mean_bin_synchA20,
+#                                        mean_bin_synchA21 = mean_bin_synchA21,
+#                                        mean_bin_synchA22 = mean_bin_synchA22,
+#                                        mean_bin_synchA23 = mean_bin_synchA23,
+#                                        mean_bin_synchA24 = mean_bin_synchA24,
+#                                        mean_bin_synchA25 = mean_bin_synchA25,
+#                                        mean_bin_synchA26 = mean_bin_synchA26,
+#                                        mean_bin_synchA27 = mean_bin_synchA27,
+#                                        mean_bin_synchA28 = mean_bin_synchA28,
+#                                        mean_bin_synchA29 = mean_bin_synchA29,
+#                                        mean_bin_synchA30 = mean_bin_synchA30,
+#                                         mean_bin_synchA31 = mean_bin_synchA31)
+#                                       
+#           synch_mean_bin_temp = rbind(synch_mean_bin_temp,temp_synch_bins.df)
+#                                        
+#           
+#       }
+#     }
+#   }
+# }
+# 
+# synch_mean_bin = as.data.table(synch_mean_bin_temp)
+# 
+# # Redefine the conditions
+# synch_mean_bin [,load_condition:= as.factor("")] [condition == 101 | condition == 102, load_condition := as.factor("low") ] [condition == 103 | condition == 104, load_condition := as.factor("high")]
+# # stim_type: 1 = "color", 2 = "shape"
+# synch_mean_bin [, stim_type := as.factor("")] [condition == 101 | condition == 103, stim_type := as.factor("color") ] [condition == 102 | condition == 104, stim_type := as.factor("shape")]
+# 
+# # Reorder the columns
+# setcolorder(synch_mean_bin, c("session", "condition", "stim_type", "load_condition", "bin", "mean_acc"))
+
+```
+
+
+However in the above way, we treat indirectly block as a factor. Since we do not care about the effect of block (pps reset after the change of block. Its not 1 continuous task, but 2). Therefore, we can collapse all trials to a max of 90 and group them only by their condition regardless of whether they appeared 1st or 2nd. Note! In this way we still preserve the effect of time ,i.e. learning process within the block.
+
+```{r}
+# take trial number , values above 90 , -90 --> all data will be 9 bins 
+first_fold <- synchrony_channels.dt[trial <= 90]
+second_fold <- synchrony_channels.dt[trial > 90]
+second_fold<- mutate(second_fold, trial = trial - 90)
+
+synchrony_folded <- rbind(first_fold, second_fold)
+
+
+# Run again the bin preparation 
+
+# define bin width
+bin_width = 10
+
+
+# cut the data
+bin_data <-synchrony_folded[,`:=`(bin = cut(trial, breaks = seq(1, nrow(synchrony_folded), by=bin_width), right=FALSE))]
+
+# bin should be numeric
+bin_data[,bin:= as.numeric(bin)]
+
+
+# create the datatable with the mean synchrony for each session in each bin.
+synch_mean_bin_temp = data.frame()
+
+for (isession in 1:length(unique(bin_data$session)))
+  {
+    currsession = unique(bin_data$session)[isession]
+    
+    for (icondition in 1:length(unique(bin_data$condition)))
+    {
+      currcondition = unique(bin_data$condition)[icondition]
+      
+      for (ibin in 1:length(unique(bin_data$bin)))
+      {
+        currbin = unique(synchrony_folded$bin)[ibin]
+        currdata <- bin_data[session==currsession & bin==currbin & condition==currcondition]
+        # currdata = subset(synchrony_channels.dt, session==currsession & load==currload & stim==currstim & bin==currbin)
+        
+        if (nrow(currdata)==0)
+        {
+          next
+        } else {
+          
+          # calculate mean synchrony per channel
+          mean_acc = mean(currdata$accuracy)
+          mean_bin_synchA1 = mean(currdata$A1_A1, na.rm=TRUE)
+          mean_bin_synchA2 = mean(currdata$A2_A2,na.rm=TRUE)
+          mean_bin_synchA3 = mean(currdata$A3_A3, na.rm=TRUE)
+          mean_bin_synchA4 = mean(currdata$A4_A4, na.rm=TRUE)
+          mean_bin_synchA5 = mean(currdata$A5_A5, na.rm=TRUE)
+          mean_bin_synchA6 = mean(currdata$A6_A6, na.rm=TRUE)
+          mean_bin_synchA7 = mean(currdata$A7_A7, na.rm=TRUE)
+          mean_bin_synchA8 = mean(currdata$A8_A8, na.rm=TRUE)
+          mean_bin_synchA9 = mean(currdata$A9_A9, na.rm=TRUE)
+          mean_bin_synchA10 = mean(currdata$A10_A10, na.rm=TRUE)
+          mean_bin_synchA11 = mean(currdata$A11_A11, na.rm=TRUE)
+          mean_bin_synchA12 = mean(currdata$A12_A12, na.rm=TRUE)
+          mean_bin_synchA13 = mean(currdata$A13_A13, na.rm=TRUE)
+          mean_bin_synchA14 = mean(currdata$A14_A14, na.rm=TRUE)
+          mean_bin_synchA15 = mean(currdata$A15_A15, na.rm=TRUE)
+          mean_bin_synchA16 = mean(currdata$A16_A16, na.rm=TRUE)
+          mean_bin_synchA17 = mean(currdata$A17_A17, na.rm=TRUE)
+          mean_bin_synchA18 = mean(currdata$A18_A18, na.rm=TRUE)
+          mean_bin_synchA19 = mean(currdata$A19_A19, na.rm=TRUE)
+          mean_bin_synchA20 = mean(currdata$A20_A20, na.rm=TRUE)
+          mean_bin_synchA21 = mean(currdata$A21_A21, na.rm=TRUE)
+          mean_bin_synchA22 = mean(currdata$A22_A22, na.rm=TRUE)
+          mean_bin_synchA23 = mean(currdata$A23_A23, na.rm=TRUE)
+          mean_bin_synchA24 = mean(currdata$A24_A24, na.rm=TRUE)
+          mean_bin_synchA25 = mean(currdata$A25_A25, na.rm=TRUE)
+          mean_bin_synchA26 = mean(currdata$A26_A26, na.rm=TRUE)
+          mean_bin_synchA27 = mean(currdata$A27_A27, na.rm=TRUE)
+          mean_bin_synchA28 = mean(currdata$A28_A28,na.rm=TRUE)
+          mean_bin_synchA29 = mean(currdata$A29_A29, na.rm=TRUE)
+          mean_bin_synchA30 = mean(currdata$A30_A30,na.rm=TRUE)
+          mean_bin_synchA31 = mean(currdata$A31_A31,na.rm=TRUE)
+          
+          temp_synch_bins.df = data.frame(session=currsession,
+                                       condition = currcondition, 
+                                       bin = currbin,
+                                       mean_acc = mean_acc,
+                                       mean_bin_synchA1 = mean_bin_synchA1,
+                                       mean_bin_synchA2 = mean_bin_synchA2,
+                                       mean_bin_synchA3 = mean_bin_synchA3,
+                                       mean_bin_synchA4 = mean_bin_synchA4,
+                                       mean_bin_synchA5 = mean_bin_synchA5,
+                                       mean_bin_synchA6 = mean_bin_synchA6,
+                                       mean_bin_synchA7 = mean_bin_synchA7,
+                                       mean_bin_synchA8 = mean_bin_synchA8,
+                                       mean_bin_synchA9 = mean_bin_synchA9,
+                                       mean_bin_synchA10 = mean_bin_synchA10,
+                                       mean_bin_synchA11 = mean_bin_synchA11,
+                                       mean_bin_synchA12 = mean_bin_synchA12,
+                                       mean_bin_synchA13 = mean_bin_synchA13,
+                                       mean_bin_synchA14 = mean_bin_synchA14,
+                                       mean_bin_synchA15 = mean_bin_synchA15,
+                                       mean_bin_synchA16 = mean_bin_synchA16,
+                                       mean_bin_synchA17 = mean_bin_synchA17,
+                                       mean_bin_synchA18 = mean_bin_synchA18,
+                                       mean_bin_synchA19 = mean_bin_synchA19,
+                                       mean_bin_synchA20 = mean_bin_synchA20,
+                                       mean_bin_synchA21 = mean_bin_synchA21,
+                                       mean_bin_synchA22 = mean_bin_synchA22,
+                                       mean_bin_synchA23 = mean_bin_synchA23,
+                                       mean_bin_synchA24 = mean_bin_synchA24,
+                                       mean_bin_synchA25 = mean_bin_synchA25,
+                                       mean_bin_synchA26 = mean_bin_synchA26,
+                                       mean_bin_synchA27 = mean_bin_synchA27,
+                                       mean_bin_synchA28 = mean_bin_synchA28,
+                                       mean_bin_synchA29 = mean_bin_synchA29,
+                                       mean_bin_synchA30 = mean_bin_synchA30,
+                                        mean_bin_synchA31 = mean_bin_synchA31)
+                                      
+          synch_mean_bin_temp = rbind(synch_mean_bin_temp,temp_synch_bins.df)
+                                       
+          
+      }
+    }
+  }
+}
+
+synch_mean_bin = as.data.table(synch_mean_bin_temp)
+
+# Redefine the conditions
+synch_mean_bin [,load_condition:= as.factor("")] [condition == 101 | condition == 102, load_condition := as.factor("low") ] [condition == 103 | condition == 104, load_condition := as.factor("high")]
+# stim_type: 1 = "color", 2 = "shape"
+synch_mean_bin [, stim_type := as.factor("")] [condition == 101 | condition == 103, stim_type := as.factor("color") ] [condition == 102 | condition == 104, stim_type := as.factor("shape")]
+
+# Reorder the columns
+setcolorder(synch_mean_bin, c("session", "condition", "stim_type", "load_condition", "bin", "mean_acc"))
+view(synch_mean_bin)
+
+
+```
+
+
+
+
+## Bin Data visualization
+
+### Plotting Raw & Predicted Data
+Plotting points and lines of raw data can be helpful for exploring and understanding the data.
+
+#### Prepare the Data
+Summarise by bin and condition across subjs. 
+```{r}
+library(gridExtra)
+library(grid)
+library(lattice)
+
+# Prepare the data
+plotting_series <- synch_mean_bin %>%
+  group_by(bin, load_condition, stim_type) %>%
+  summarise(mean_bin_synchA1 = mean(mean_bin_synchA1), 
+            mean_bin_synchA2 = mean(mean_bin_synchA2),
+            mean_bin_synchA3 = mean(mean_bin_synchA30),
+            mean_bin_synchA4 = mean(mean_bin_synchA4),
+            mean_bin_synchA5 = mean(mean_bin_synchA5),
+            mean_bin_synchA6 = mean(mean_bin_synchA6),
+            mean_bin_synchA7 = mean(mean_bin_synchA7),
+            mean_bin_synchA8 = mean(mean_bin_synchA8),
+            mean_bin_synchA9 = mean(mean_bin_synchA9),
+            mean_bin_synchA10 = mean(mean_bin_synchA10),
+            mean_bin_synchA11 = mean(mean_bin_synchA11),
+            mean_bin_synchA12 = mean(mean_bin_synchA12),
+            mean_bin_synchA13 = mean(mean_bin_synchA13),
+            mean_bin_synchA14 = mean(mean_bin_synchA14),
+            mean_bin_synchA15 = mean(mean_bin_synchA15),
+            mean_bin_synchA16 = mean(mean_bin_synchA16),
+            mean_bin_synchA17 = mean(mean_bin_synchA17),
+            mean_bin_synchA18 = mean(mean_bin_synchA18),
+            mean_bin_synchA19 = mean(mean_bin_synchA19),
+            mean_bin_synchA20 = mean(mean_bin_synchA20),
+            mean_bin_synchA21 = mean(mean_bin_synchA21),
+            mean_bin_synchA22 = mean(mean_bin_synchA22),
+            mean_bin_synchA23 = mean(mean_bin_synchA23),
+            mean_bin_synchA24 = mean(mean_bin_synchA24),
+            mean_bin_synchA25 = mean(mean_bin_synchA25),
+            mean_bin_synchA26 = mean(mean_bin_synchA26),
+            mean_bin_synchA27 = mean(mean_bin_synchA27),
+            mean_bin_synchA28 = mean(mean_bin_synchA28),
+            mean_bin_synchA29 = mean(mean_bin_synchA29),
+            mean_bin_synchA30 = mean(mean_bin_synchA30),
+            mean_bin_synchA31 = mean(mean_bin_synchA31))
+
+```
+
+
+#### Plotting the RAW data
+Plotting synchrony over time (whole trial, block1 & block2) by cognitive load and stimulus type. 
+##### One electrode
+```{r}
+
+series_plot<- ggplot(plotting_series, aes(x = bin, y = mean_bin_synchA1,color=load_condition, linetype=stim_type)) + 
+                scale_colour_hue(name="cognitive load", l=30) +
+                scale_linetype_manual(name="Stimulus Type", values=c("shape"=2,"color"=1))+
+                geom_line(lwd=1) +
+                geom_point(size=3) +
+                labs(x = "Time (bins)", y = "Mean Synchrony", 
+                title = "Mean binned synchrony on A1 by condition over time") +
+                theme_minimal()+
+                scale_x_continuous(breaks=1:18)+
+                coord_fixed(ratio = 170)
+
+## Only if you use block, divide them in the 2 blocks
+# series_plotB1<- ggplot(plotting_seriesB1, aes(x = bin, y = mean_bin_synchA1, group=interaction(load_condition, stim_type),                 color=load_condition, linetype=stim_type)) + 
+#                 scale_colour_hue(name="cognitive load", l=30) +
+#                 scale_linetype_manual(name="Stimulus Type", values=c("shape"=2,"color"=1))+
+#                 geom_line(lwd=1) +
+#                 geom_point(size=3) +
+#                 labs(x = "Time (bins)", y = "Mean Synchrony", subtitle = "Block 1",
+#                 title = "Mean binned synchrony on A1 by condition over time") +
+#                 theme_minimal()+
+#                 scale_x_continuous(breaks=1:10)
+# 
+# series_plotB2<- ggplot(plotting_seriesB2, aes(x = bin, y = mean_bin_synchA1, group=interaction(load_condition, stim_type),                 color=load_condition, linetype=stim_type)) + 
+#                 scale_colour_hue(name="cognitive load", l=30) +
+#                 scale_linetype_manual(name="Stimulus Type", values=c("shape"=2,"color"=1))+
+#                 geom_line(lwd=1) +
+#                 geom_point(size=3) +
+#                 labs(x = "Time (bins)", y = "Mean Synchrony", subtitle = "Block 2",
+#                 title = "Mean binned synchrony on A1 by stimulus type over time") +
+#                 theme_minimal()+
+#                 scale_x_continuous(breaks=10:18)
+
+series_plot
+# series_plotB1
+# series_plotB2
+# group=interaction(load_condition, stim_type)
+```
+##### All electrodes
+```{r}
+# print(cols, quote= FALSE) # strip the strings from quotes
+# colchannels <- colnames(plotting_series)[4:34]
+
+colchannels <-  c("mean_bin_synchA1",  "mean_bin_synchA2", "mean_bin_synchA3",  "mean_bin_synchA4",  "mean_bin_synchA5" , "mean_bin_synchA6" , "mean_bin_synchA7", "mean_bin_synchA8", "mean_bin_synchA9", "mean_bin_synchA10", "mean_bin_synchA11", "mean_bin_synchA12","mean_bin_synchA13", "mean_bin_synchA14","mean_bin_synchA15", "mean_bin_synchA16", "mean_bin_synchA17","mean_bin_synchA18", "mean_bin_synchA19", "mean_bin_synchA20", "mean_bin_synchA21", "mean_bin_synchA22","mean_bin_synchA23", "mean_bin_synchA24", "mean_bin_synchA25", "mean_bin_synchA26", "mean_bin_synchA27","mean_bin_synchA28", "mean_bin_synchA29", "mean_bin_synchA30", "mean_bin_synchA31")
+
+for (ichannel in colchannels)
+{ 
+  name <- gsub("mean_bin_synch", "", ichannel) 
+  channel <- which(colnames(plotting_series) == ichannel)
+  plotting_series$rotating_channel <- plotting_series[, channel]
+  plotting_series$rotating_channel <- unlist(plotting_series$rotating_channel)
+  splot <- ggplot(plotting_series, aes(x = bin, y = rotating_channel, 
+                                       group=interaction(load_condition, stim_type),
+                                       color=load_condition, linetype=stim_type)) +
+                scale_colour_hue(name="cognitive load", l=30) +
+                scale_linetype_manual(name="Stimulus Type", values=c("shape"=2,"color"=1))+
+                geom_line(lwd=1) +
+                geom_point(size=3) +
+                labs(x = "Time (bins)", y = "Mean Synchrony") +
+                theme_minimal()+
+                scale_x_continuous(breaks=1:18)+
+    ggtitle(paste0("Mean binned synchrony on ", as.character(name), " by condition over time"))
+  
+  # plot_name <- paste0(as.character(name),".png")
+  #   
+  # ggsave(plot_name, device = "png")
+  
+  print(splot)
+  
+}
+```
+
+```{r}
+#check the descriptive stats
+
+overall<-  melt(synch_mean_bin, id.vars=c("session", "condition", "stim_type", "load_condition", "bin", "mean_acc"),variable.name = "Chans", value.name="Synchrony")
+
+means_over<- overall %>%
+  group_by(bin, load_condition, stim_type) %>%
+  summarise(mean_synchrony = mean(Synchrony))
+
+plottin_overall <- ggplot(means_over, aes(x = bin, y = mean_synchrony, color = load_condition, linetype = stim_type)) +
+                   geom_line(lwd=1) +
+                   geom_point(size=3) +
+                   labs(x = "Time (bins)", y = "Mean Synchrony", 
+                   title = "Mean binned synchrony sum all electrodes by condition over time")
+plottin_overall
+
+## For when having BLOCKS in the game. 
+
+# means_overB1 <- subset(means_over, bin < 10)  
+# means_overB2 <- subset(means_over, bin >= 10)
+
+# plottin_overallB1 <- ggplot(means_overB1, aes(x = bin, y = mean_synchrony, color = load_condition, linetype = stim_type)) +
+#                    geom_line(lwd=1) +
+#                    geom_point(size=3) +
+#                    labs(x = "Time (bins)", y = "Mean Synchrony", subtitle = "First Block",
+#                    title = "Mean binned synchrony sum all electrodes by condition over time")
+# plottin_overallB2 <- ggplot(means_overB2, aes(x = bin, y = mean_synchrony, color = load_condition, linetype = stim_type)) +
+#                    geom_line(lwd=1) +
+#                    geom_point(size=3) +
+#                    labs(x = "Time (bins)", y = "Mean Synchrony", subtitle = "Second Block",
+#                    title = "Mean binned synchrony sum all electrodes by condition over time") 
+# 
+# plottin_overallB1
+# plottin_overallB2
+```
+
+
+#### Plotting Predicted values 
+Using geom_smooth, we depict the relationship between the X = time(bin) and Y = mean_synch_ichan variable. So we fit a loess regression with standard errors for the predicted values in Y. In other words, using conditional means or expected values of one variable based on some model can be more informative about overall trends or patterns in the data.
+
+The interval bands flare out at the end because there is less data at the endpoints of the data. Therefore, there is less certainty about the prediction there (which is common problem in any regression). By [Missly, 2011](https://www.r-bloggers.com/2011/05/sab-r-metrics-basics-of-loess-regression/)
+
+
+##### for one electrode
+```{r}
+
+stim_bin_plot<- ggplot(synch_mean_bin) + 
+                  geom_smooth(aes(x = bin, y = mean_bin_synchA1, colour= stim_type),method = loess)+
+                  # geom_vline(aes(xintercept = 10, linetype = "dashed"))+
+                  scale_color_manual(values=c("color" = "darkslateblue", "shape" = "tomato3"))+
+                  # scale_linetype_manual(name= "Block Change", values = 9) +
+                  labs(x = "Time (bins)", y = "Mean Synchrony", 
+                   title = "Mean binned synchrony on A1 as a function of stimulus type over time") +
+                  theme_minimal()
+                  # expand_limits(y=c(0, 1))
+
+load_bin_plot<- ggplot(synch_mean_bin) + 
+                  geom_smooth(aes(x = bin, y = mean_bin_synchA1, colour= load_condition), method = loess)+
+                  # geom_vline(aes(xintercept = 10, linetype = "dashed"))+
+                  scale_color_manual(values=c("low" = "darkslateblue", "high" = "tomato3"))+
+                  # scale_linetype_manual(name= "Block Change", values = 9) +
+                  labs(x = "Time (bins)", y = "Mean Synchrony", 
+                   title = "Mean binned synchrony on A1 as a function of load condition over time") +
+                  theme_minimal()
+                  # expand_limits(y=c(0, 1)) 
+
+# Plot binned_data + load condition in stim type
+loadstim_bin_plot <- ggplot(synch_mean_bin) + 
+              geom_smooth(aes(x = bin, y = mean_bin_synchA1, colour= load_condition), method = loess)+
+              # geom_vline(aes(xintercept = 10, linetype = "dashed"))+
+              scale_color_manual(values=c("low" = "darkslateblue", "high" = "tomato3"))+              
+   labs(x = "Time (bins)", y = "Mean Synchrony", 
+                   title = "Mean binned synchrony on A1 as a function of cognitive load over time") + 
+              scale_linetype_manual(name= "Block Change", values = 9) +
+              # expand_limits(y=c(0, 1))+
+              theme_minimal()+
+              facet_grid(~ stim_type)
+
+load_bin_plot
+stim_bin_plot
+loadstim_bin_plot
+```
+
+##### Loop for all electrodes
+
+```{r}
+colchannels <-  c("mean_bin_synchA1",  "mean_bin_synchA2", "mean_bin_synchA3",  "mean_bin_synchA4",  "mean_bin_synchA5" , "mean_bin_synchA6" , "mean_bin_synchA7", "mean_bin_synchA8", "mean_bin_synchA9", "mean_bin_synchA10", "mean_bin_synchA11", "mean_bin_synchA12","mean_bin_synchA13", "mean_bin_synchA14","mean_bin_synchA15", "mean_bin_synchA16", "mean_bin_synchA17","mean_bin_synchA18", "mean_bin_synchA19", "mean_bin_synchA20", "mean_bin_synchA21", "mean_bin_synchA22","mean_bin_synchA23", "mean_bin_synchA24", "mean_bin_synchA25", "mean_bin_synchA26", "mean_bin_synchA27","mean_bin_synchA28", "mean_bin_synchA29", "mean_bin_synchA30", "mean_bin_synchA31")
+
+for (ichannel in colchannels)
+{ 
+  name <- gsub("mean_bin_synch", "", ichannel) 
+  channel <- which(colnames(synch_mean_bin) == ichannel)
+  synch_mean_bin$rotating_channel <- synch_mean_bin[,..channel]
+  synch_mean_bin$rotating_channel <- unlist(synch_mean_bin$rotating_channel)
+  smooth_plot <- ggplot(synch_mean_bin)+
+          geom_smooth(aes(x = bin, y = rotating_channel, color=load_condition),method = lm) +
+          geom_vline(aes(xintercept = 9.5, linetype = "dashed"))+
+                scale_colour_hue(name="cognitive load", l=30) +
+                labs(x = "Time (bins)", y = "Mean Synchrony", subtitle = "Whole trial") +
+                theme_minimal()+
+                scale_x_continuous(breaks=1:18)+
+                # facet_grid(~ stim_type)+
+    ggtitle(paste0("Mean binned synchrony on ", as.character(name), " by cognitive load over time"))
+   # 
+   #   smoothplot_name <- paste0("Predicted mean synchrony of ",as.character(name),".png")
+   # #   
+   #  ggsave(smoothplot_name, device = "png")
+   # 
+  print(smooth_plot)
+  
+}
+```
+
+
+
+
+## LMM in Binned data
+
+### LMM binned data one elctrode
+```{r}
+null_binA1 <- lmer(mean_bin_synchA1 ~ 1 + (1|session) , data = synch_mean_bin, REML = FALSE)
+null_binA7 <- lmer(mean_bin_synchA30 ~ 1 + (1|session) , data = synch_mean_bin, REML = FALSE) 
+summary (null_binA1)
+
+#singular fit in A7, A8, A26, A27, A29, A30
+
+
+# Reduced model
+reduced_binA1<-lmer(mean_bin_synchA1 ~ stim_type + (1|session) , data = synch_mean_bin, REML = FALSE)
+reduced_binA31<-lmer(mean_bin_synchA31 ~ stim_type + (1|session) , data = synch_mean_bin, REML = FALSE)
+summary (reduced_binA1)
+summary (reduced_binA31)
+
+# Comparison 0
+anova(null_binA31, reduced_binA31)
+anova(null_binA1, reduced_binA1) 
+
+#fullmodel
+full_binA1 <- lmer(mean_bin_synchA1 ~ stim_type + load_condition + (1|session) , data = synch_mean_bin, REML = FALSE)
+full_binA31 <- lmer(mean_bin_synchA31 ~ stim_type + load_condition + (1|session) , data = synch_mean_bin, REML = FALSE) # In the full model A28 doesn't give singularity anymore :/
+
+summary (full_binA1)
+summary (full_binA31)
+
+ #comparison A
+anova(reduced_binA31, full_binA31)
+anova(reduced_binA1, full_binA1)
+# comparison B
+anova(null_binA1, full_binA1) # not sign
+```
+Different channels give the singularity problem now.
+
+### Loop LMM over all electrodes in binned data
+```{r}
+channels <-as.data.frame(synch_mean_bin[,c(7:37)])
+# dim(channels) #get the dimensions of matrix
+```
+
+##### Null to Reduced
+
+```{r}
+comparison_binNR_output <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  #null model with stim_type
+  null_smodel <- lmer(variable ~ 1 + (1|session), REML = FALSE, data = synch_mean_bin)
+  sum_null_smodel <- summary(null_smodel)
+  
+  #reduced model with 
+  reduced_smodel <-lmer(variable ~ stim_type + (1|session), REML = FALSE, data = synch_mean_bin)
+  sum_reduced_smodel <- summary(reduced_smodel)
+  
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(null_smodel, reduced_smodel)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  comparison_binNR_output <- rbind(comparison_binNR_output, comparison.tmp)
+  
+}
+
+view(comparison_binNR_output)
+```
+
+OLD DATA
+Significant Channels:
+-  A3
+-  A6
+-  A28
+
+NEW DATA
+nothing is significant
+
+
+
+##### Reduced to Full
+```{r}
+
+comparison_binRF_output <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  #reduced model with stim_type
+  reduced_smodel <- lmer(variable ~ stim_type + (1|session), REML = FALSE, data = synch_mean_bin)
+  sum_rdc_smodel <- summary(reduced_smodel)
+  
+  #full model with 
+  full_smodel <-lmer(variable ~ stim_type + load_condition + (1|session), REML = FALSE, data = synch_mean_bin)
+  sum_full_smodel <- summary(full_smodel)
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(reduced_smodel, full_smodel)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  comparison_binRF_output <- rbind(comparison_binRF_output, comparison.tmp)
+  
+}
+
+view(comparison_binRF_output)
+```
+
+OLD DATA
+Significant Channels:
+-  A5
+-  A8
+-  A12
+
+New DATA
+-A27
+-A28
+
+
+Since stim_type is not significant
+
+```{r}
+comparison_binNF_output <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  #reduced model with stim_type
+  null_smodel <- lmer(variable ~ 1 + (1|session), REML = FALSE, data = synch_mean_bin)
+  sum_null_smodel <- summary(null_smodel)
+  
+  #full model with 
+  full_smodel <-lmer(variable ~ stim_type + load_condition + (1|session), REML = FALSE, data = synch_mean_bin)
+  sum_full_smodel <- summary(full_smodel)
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(null_smodel, full_smodel)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  comparison_binNF_output <- rbind(comparison_binNF_output, comparison.tmp)
+  
+}
+
+view(comparison_binNF_output)
+```
+
+
+
+### Summaries for significant electrodes
+```{r}
+# null_binA5 <- lmer(mean_bin_synchA5 ~ 1 + (1|session) , data = synch_mean_bin, REML = FALSE)
+# null_binA8 <- lmer(mean_bin_synch8 ~ 1 + (1|session) , data = synch_mean_bin, REML = FALSE)
+# null_binA12 <- lmer(mean_bin_synchA12 ~ 1 + (1|session) , data = synch_mean_bin, REML = FALSE)
+# 
+# reduced_binA5<-lmer(mean_bin_synchA5 ~ stim_type + (1|session) , data = synch_mean_bin, REML = FALSE)
+# reduced_binA8<-lmer(mean_bin_synch8 ~ stim_type + (1|session) , data = synch_mean_bin, REML = FALSE)
+# reduced_binA12<-lmer(mean_bin_synchA12 ~ stim_type + (1|session) , data = synch_mean_bin, REML = FALSE)
+
+full_binA5 <- lmer(mean_bin_synchA5 ~ stim_type + load_condition + (1|session) , data = synch_mean_bin, REML = FALSE)
+full_binA8 <- lmer(mean_bin_synch8 ~ stim_type + load_condition + (1|session) , data = synch_mean_bin, REML = FALSE)
+full_binA12 <- lmer(mean_bin_synchA12 ~ stim_type + load_condition + (1|session) , data = synch_mean_bin, REML = FALSE)
+
+summary(full_binA5)
+summary(full_binA8)
+summary(full_binA12)
+
+# use formatC(4.778e-03, digits = 7) to see the actual number without the scientific notation.
+
+```
+
+### Resutls:
+OLD DATA
+Check where the results correspond in brain map [here](http://www.brainm.com/software/pubs/dg/BA_10-20_ROI_Talairach/nearesteeg.htm)
+
+1. A5 (FC1): With high cognitive load, synchrony slightly increases by approximately 0.005 points (?) 
+2. A8 (C3): With high cognitive load, synchrony significantly decreases by approximately 0.005 points (?)
+3. A12 (A12): With high cognitive load, synchrony significantly decreases by approximately 0.006 points (?)z
+
+
+## Is there an effect of accuracy?
+```{r}
+
+# one channel 
+null_accA1 <- lmer(mean_bin_synchA1 ~ 1 + (1|session) , data = synch_mean_bin, REML = FALSE)
+null_accA31 <- lmer(mean_bin_synchA31 ~ 1 + (1|session) , data = synch_mean_bin, REML = FALSE) 
+summary (null_accA1)
+
+# Reduced model
+reduced_accA1<-lmer(mean_bin_synchA1 ~ mean_acc + (1|session) , data = synch_mean_bin, REML = FALSE)
+reduced_accA31<-lmer(mean_bin_synchA31 ~ mean_acc + (1|session) , data = synch_mean_bin, REML = FALSE)
+summary (reduced_accA1)
+summary (reduced_accA31)
+
+# Comparison 0
+anova(null_accA1, reduced_accA1)
+anova(null_binA1, reduced_binA1) 
+
+#fullmodel
+full_binA1 <- lmer(mean_bin_synchA1 ~ stim_type + load_condition + (1|session) , data = synch_mean_bin, REML = FALSE)
+full_binA31 <- lmer(mean_bin_synchA31 ~ stim_type + load_condition + (1|session) , data = synch_mean_bin, REML = FALSE) # In the full model A28 doesn't give singularity anymore :/
+
+summary (full_binA1)
+summary (full_binA31)
+
+ #comparison A
+anova(reduced_binA31, full_binA31)
+anova(reduced_binA1, full_binA1)
+# comparison B
+anova(nlllmdlsA1, full_smodel) # not sign
+```
+### Check all electrodes for accuracy effect 
+
+#### Null to Reduced 1
+```{r}
+comparison_accNR_output <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  #null model with stim_type
+  null_accmodel <- lmer(variable ~ 1 + (1|session), REML = FALSE, data = synch_mean_bin)
+  sum_null_accmodel <- summary(null_accmodel)
+  
+  #reduced model with 
+  reduced_aacmodel <-lmer(variable ~ mean_acc + (1|session), REML = FALSE, data = synch_mean_bin)
+  sum_reduced_accmodel <- summary(reduced_aacmodel)
+  
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(null_accmodel, reduced_aacmodel)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  comparison_accNR_output <- rbind(comparison_accNR_output, comparison.tmp)
+  
+}
+
+view(comparison_accNR_output)
+
+# install.packages("writexl")
+# library("writexl")
+# write_xlsx(comparison_accNR_output,"C:/Users/katec/Desktop/Major_Project/5. Analysis/Behavioural/ lmer_comparison_accNR_synch.xlsx")
+
+
+```
+OLD DATA 
+Significant channels:
+- A10 (CP5): It’s roughly where the temporal, occipital and parietal lobes meet on the left (supramarginal). Earlier-developing success in the implicit ToM tasks is associated with the supramarginal gyrus (SMG).[Wiesmann et al., 2020](https://www.pnas.org/content/117/12/6928)
+
+NEW DATA
+Significant channels:
+- A1
+- A2
+- A5
+
+#### Reduced1 to Reduced 2: 
+Adding stim_type
+
+```{r}
+
+comparison_accRR_output <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  #null model with stim_type
+  reduced_aacmodel <- lmer(variable ~ mean_acc + (1|session), REML = FALSE, data = synch_mean_bin)
+  # sum_reduced_accmodel <- summary(reduced_aacmodel)
+  
+  #reduced model with 
+  reduced2_aacmodel <-lmer(variable ~ mean_acc + stim_type + (1|session), REML = FALSE, data = synch_mean_bin)
+  # sum_reduced2_accmodel <- summary(reduced2_aacmodel)
+  
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(reduced_aacmodel, reduced2_aacmodel)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  comparison_accRR_output <- rbind(comparison_accRR_output, comparison.tmp)
+  
+}
+
+view(comparison_accRR_output)
+
+
+
+```
+Nothing is Significant
+
+#### Reduced 1 to Full
+Adding load to mean acc
+```{r}
+comparison_accRF_output <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  #null model with stim_type
+  reduced_aacmodel <- lmer(variable ~ mean_acc + (1|session), REML = FALSE, data = synch_mean_bin)
+  # sum_reduced_accmodel <- summary(reduced_aacmodel)
+  
+  #reduced model with 
+  full_aacmodel <-lmer(variable ~ mean_acc + load_condition + (1|session), REML = FALSE, data = synch_mean_bin)
+  # sum_reduced2_accmodel <- summary(reduced2_aacmodel)
+  
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(reduced_aacmodel, full_aacmodel)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  comparison_accRF_output <- rbind(comparison_accRF_output, comparison.tmp)
+  
+}
+
+view(comparison_accRF_output)
+
+# write_xlsx(comparison_accNR_output,"C:/Users/katec/Desktop/Major_Project/5. Analysis/Behavioural/lmer_tables_synch/ lmer_comparison_accRF_synch.xlsx")
+
+```
+
+NEW DATA
+Significant channels:
+- A27
+- A28
+
+
+
+
+## Is there an effect of time 
+```{r}
+null_tA1 <- lmer(mean_bin_synchA1 ~ 1 + (1|session) , data = synch_mean_bin, REML = FALSE)
+reduced_tA1<-lmer(mean_bin_synchA1 ~ bin + (1|session) , data = synch_mean_bin, REML = FALSE)
+summary(reduced_tA1)
+anova(null_tA1, reduced_tA1)
+```
+
+#### Null to reduced : Time
+
+```{r}
+comparison_timeNR_output <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  #null model with stim_type
+  null_tmodel <- lmer(variable ~ 1 + (1|session), REML = FALSE, data = synch_mean_bin)
+  sum_null_tmodel <- summary(null_tmodel)
+  
+  #reduced model with 
+  reduced_tmodel <-lmer(variable ~ bin + (1|session), REML = FALSE, data = synch_mean_bin)
+  sum_reduced_tmodel <- summary(reduced_tmodel)
+  
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(null_tmodel, reduced_tmodel)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  comparison_timeNR_output <- rbind(comparison_timeNR_output, comparison.tmp)
+  
+}
+
+view(comparison_timeNR_output)
+# write_xlsx(comparison_accNR_output,"C:/Users/katec/Desktop/Major_Project/5. Analysis/Behavioural/lmer_tables_synch/ comparison_timeNR_synch.xlsx")
+
+```
+
+OLD DATA
+No effect of time in either channel. 
+
+NEW DATA(block)
+Significant channels:
+- A4
+- A5
+- A9
+- A11
+- A25
+- A28
+
+New DATA (unblocked)
+Significant channels:
+- A4  (synch decreases by 0.007)
+- A5  (synch decreases by 0.007)
+- A16  (synch decreases by 0.007)
+- A25 (synch increases by 0.007)
+- A28 (synch increases by 0.001)
+```{r}
+load_A16 <- lmer(mean_bin_synchA28 ~ load_condition + bin + (1|session) , data = synch_mean_bin, REML = FALSE)
+load_timeA16<-lmer(mean_bin_synchA28 ~ load_condition * bin + (1|session) , data = synch_mean_bin, REML = FALSE)
+summary(load_A16)
+summary(load_timeA16)
+anova(load_timeA16, load_A16) # interactin is significant 
+
+```
+
+
+
+#### Reduced1 to reduced2 : Time
+adding stim_type
+
+```{r}
+comparison_timeRR_output <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  #null model with stim_type
+  reduced_tmodel <- lmer(variable ~ bin + (1|session), REML = FALSE, data = synch_mean_bin)
+  
+  #reduced model with 
+  reduced2_tmodel <-lmer(variable ~ bin + stim_type + (1|session), REML = FALSE, data = synch_mean_bin)
+  sum_reduced2_tmodel <- summary(reduced2_tmodel)
+  
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(reduced_tmodel, reduced2_tmodel)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  comparison_timeRR_output <- rbind(comparison_timeRR_output, comparison.tmp)
+  
+}
+
+view(comparison_timeRR_output)
+
+
+
+```
+Nothing significant
+
+#### Reduced1 to Full: Time
+adding load condition
+
+```{r}
+comparison_timeRF_output <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  #null model with stim_type
+  reduced_tmodel <- lmer(variable ~ bin + (1|session), REML = FALSE, data = synch_mean_bin)
+  
+  #reduced model with 
+  full_tmodel <-lmer(variable ~ bin + load_condition + (1|session), REML = FALSE, data = synch_mean_bin)
+  sum_reduced2_tmodel <- summary(full_tmodel)
+  
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(reduced_tmodel, full_tmodel)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  comparison_timeRF_output <- rbind(comparison_timeRF_output, comparison.tmp)
+  
+}
+
+view(comparison_timeRF_output)
+# write_xlsx(comparison_accNR_output,"C:/Users/katec/Desktop/Major_Project/5. Analysis/Behavioural/lmer_tables_synch/ comparison_timeRF_synch.xlsx")
+
+```
+
+NEW DATA
+Significant channels:
+- A27
+(F8 :  inferior frontal sulcus (IFS) in semantic processing, anguage and working memory,  serial order processing, and in inhibition tasks ( https://www.frontiersin.org/articles/10.3389/fnhum.2012.00284/full).  Recent work explicitly addresses this brain area as having a major role to the IFJ related to three main component processes (task switching, inhibitory control and working memory) (https://bmcneurosci.biomedcentral.com/articles/10.1186/1471-2202-13-119)
+- A28 (frontal operculum is the cortical structure which forms the lid over the insular cortex, overlapping it and covering it from external view. key node in a network for exerting control over cognitive processes.regulating the level of activity of representations in posterior brain areas that are relevant or irrelevant, respectively, for response selection.)(https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3054014/pdf/pnas.201013361.pdf)
+
+Same results obtained with interaction between bin & load
+
+#### Reduced1 to Acc: Time
+adding accuracy
+
+```{r}
+comparison_timeRacc_output <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  #null model with stim_type
+  reduced_tmodel <- lmer(variable ~ bin + (1|session), REML = FALSE, data = synch_mean_bin)
+  
+  #reduced model with 
+  acc_tmodel <-lmer(variable ~ bin + mean_acc + (1|session), REML = FALSE, data = synch_mean_bin)
+  
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(reduced_tmodel, acc_tmodel)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  comparison_timeRacc_output <- rbind(comparison_timeRacc_output, comparison.tmp)
+  
+}
+
+view(comparison_timeRacc_output)
+```
+
+NEW DATA
+Significant channels:
+- A2
+
+
+### With bin + mean acc + load condition 
+```{r}
+comparison_timeRaccF_output <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  
+  acc_tmodel <-lmer(variable ~ bin + mean_acc + (1|session), REML = FALSE, data = synch_mean_bin)
+  
+  # 
+  facc_tmodel <-lmer(variable ~ bin + mean_acc + load_condition + (1|session), REML = FALSE, data = synch_mean_bin)
+  
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(facc_tmodel, acc_tmodel)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  comparison_timeRaccF_output <- rbind(comparison_timeRaccF_output, comparison.tmp)
+  
+}
+
+
+view(comparison_timeRaccF_output)
+```
+
+### With load condition and then add bin 
+
+```{r}
+
+comparison_LoadTime_output <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  
+  load_model <-lmer(variable ~ load_condition + (1|session), REML = FALSE, data = synch_mean_bin)
+  
+  # 
+  load_tmodel <-lmer(variable ~ bin + load_condition + (1|session), REML = FALSE, data = synch_mean_bin)
+  
+  #save the comparison in a temporary variable 
+  comparison.tmp <- anova(load_model, load_tmodel)
+  comparison.tmp$channel <-  currchannel
+  # add the comparison to df
+  comparison_LoadTime_output <- rbind(comparison_LoadTime_output, comparison.tmp)
+  
+}
+
+
+view(comparison_LoadTime_output)
+```
+NEW DATA
+Significant channels:
+- A4
+-A5
+- A16
+- A25
+- A28
+
+
+
+# Summaries
+
+```{r}
+
+
+nullmd <- lmer(mean_bin_synchA28 ~ 1 + bin + (1|session) , data = synch_mean_bin, REML = FALSE)
+stim_md<-lmer(mean_bin_synchA27 ~ stim_type  + (1|session) , data = synch_mean_bin, REML = FALSE)
+load_md <- lmer(mean_bin_synchA28 ~ load_condition + bin  + (1|session) , data = synch_mean_bin, REML = FALSE)
+load_fullmd <- lmer(mean_bin_synchA27 ~ stim_type  + load_condition +(1|session) , data = synch_mean_bin, REML = FALSE)
+# summary(stim_md)
+summary(load_md)
+summary(load_fullmd)
+anova(nullmd, load_md) # interactin is significant 
+
+
+```
+
+
+# Correlation between accuracy and IBS
+
+```{r}
+library("ggpubr")
+ggscatter(synch_mean_bin, x = "mean_acc", y = "mean_bin_synchA28", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Coordination accuracy", ylab = "PLV on A28")
+
+
+# Shapiro-Wilk normality tests
+shapiro.test(synch_mean_bin$mean_acc) # 
+shapiro.test(synch_mean_bin$mean_bin_synchA28) # 
+
+ggqqplot(synch_mean_bin$mean_acc, ylab = "Accuracy")
+# wt
+ggqqplot(synch_mean_bin$mean_bin_synchA28, ylab = "PLV A28")
+
+
+
+channels <-as.data.frame(synch_mean_bin[,c(7:37)])
+correlations <- NULL 
+
+for (i in 1:length(channels)) {
+  #define the channel (i-th column) and take all the rows
+  variable <- channels[,i]
+  currchannel <- as.character(colnames(channels[i]))
+  
+  correlation.tmp <- cor.test(synch_mean_bin$mean_acc, synch_mean_bin$channel, method="pearson")
+  correlation.tmp$channel <-  currchannel
+  # add the comparison to df
+  correlations <- rbind(correlations, correlation.tmp)
+  
+}
+
+
+view(correlations)
+
+
+
+cor.test(synch_mean_bin$mean_acc, synch_mean_bin$mean_bin_synchA21, method="spearman")
+```
+
